@@ -202,6 +202,31 @@ function esperarEnter() {
   });
 }
 
+/* v3.54: saida de comando no Windows chega em cp850 (cmd.exe), nao UTF-8 — sem
+   converter, "nao" vira "n\uFFFDo" e o texto mente. Tenta UTF-8 estrito primeiro
+   (PowerShell moderno emite UTF-8) e so cai para cp850 quando os bytes nao formam
+   UTF-8 valido. A tabela cobre 0x80..0xFF; 0x00..0x7F e ASCII. */
+const TABELA_CP850 = [
+  '\u00c7', '\u00fc', '\u00e9', '\u00e2', '\u00e4', '\u00e0', '\u00e5', '\u00e7', '\u00ea', '\u00eb', '\u00e8', '\u00ef', '\u00ee', '\u00ec', '\u00c4', '\u00c5',
+  '\u00c9', '\u00e6', '\u00c6', '\u00f4', '\u00f6', '\u00f2', '\u00fb', '\u00f9', '\u00ff', '\u00d6', '\u00dc', '\u00f8', '\u00a3', '\u00d8', '\u00d7', '\u0192',
+  '\u00e1', '\u00ed', '\u00f3', '\u00fa', '\u00f1', '\u00d1', '\u00aa', '\u00ba', '\u00bf', '\u00ae', '\u00ac', '\u00bd', '\u00bc', '\u00a1', '\u00ab', '\u00bb',
+  '\u2591', '\u2592', '\u2593', '\u2502', '\u2524', '\u00c1', '\u00c2', '\u00c0', '\u00a9', '\u2563', '\u2551', '\u2557', '\u255d', '\u00a2', '\u00a5', '\u2510',
+  '\u2514', '\u2534', '\u252c', '\u251c', '\u2500', '\u253c', '\u00e3', '\u00c3', '\u255a', '\u2554', '\u2569', '\u2566', '\u2560', '\u2550', '\u256c', '\u00a4',
+  '\u00f0', '\u00d0', '\u00ca', '\u00cb', '\u00c8', '\u0131', '\u00cd', '\u00ce', '\u00cf', '\u2518', '\u250c', '\u2588', '\u2584', '\u00a6', '\u00cc', '\u2580',
+  '\u00d3', '\u00df', '\u00d4', '\u00d2', '\u00f5', '\u00d5', '\u00b5', '\u00fe', '\u00de', '\u00da', '\u00db', '\u00d9', '\u00fd', '\u00dd', '\u00af', '\u00b4',
+  '\u00ad', '\u00b1', '\u2017', '\u00be', '\u00b6', '\u00a7', '\u00f7', '\u00b8', '\u00b0', '\u00a8', '\u00b7', '\u00b9', '\u00b3', '\u00b2', '\u25a0', '\u00a0',
+];
+function textoWindows(buf) {
+  if (!EH_WIN) return buf.toString("utf8");
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buf);
+  } catch {
+    let s = "";
+    for (const byte of buf) s += byte < 0x80 ? String.fromCharCode(byte) : TABELA_CP850[byte - 0x80];
+    return s;
+  }
+}
+
 /* ---------------- execução de comando com kill de árvore ---------------- */
 /* v3.39: `bg` — o processo nasce em grupo próprio com stdio ignorado e o cliente
    responde na hora com o PID. É o que permite subir servidor/modelo e o comando
@@ -236,7 +261,12 @@ function rodar(cmd, esperaSeg, bg) {
     const filho = EH_WIN
       ? spawn("cmd.exe", ["/d", "/c", cmd], { windowsHide: true, windowsVerbatimArguments: true })
       : spawn("/bin/sh", ["-c", cmd], { detached: true }); // detached = grupo próprio; matamos o grupo
-    let stdout = "";
+    /* v3.54: guarda BYTES e decodifica no fim (cp850 no Windows) — concatenar
+       direto em string fazia o Buffer virar UTF-8 e "não" sair como "n\uFFFDo". */
+    const partesOut = [];
+    const partesErr = [];
+    let bytesOut = 0;
+    let bytesErr = 0;
     let stderr = "";
     let morto = false;
     let truncado = false;
@@ -258,7 +288,12 @@ function rodar(cmd, esperaSeg, bg) {
     const rel = setTimeout(() => {
       matarArvore();
       stderr += "\n[cliente: mata-árvore após " + teto + "s]";
-      resolve({ exit: -124, stdout: stdout.slice(0, TETO_STDOUT), stderr: stderr.slice(0, TETO_STDERR), truncado });
+      resolve({
+        exit: -124,
+        stdout: textoWindows(Buffer.concat(partesOut)).slice(0, TETO_STDOUT),
+        stderr: (textoWindows(Buffer.concat(partesErr)) + stderr).slice(0, TETO_STDERR),
+        truncado,
+      });
     }, teto * 1000);
     /* v3.43: o teto de coleta TRUNCA, não mata. Até a 3.42.1 passar de 40.000 chars
        chamava matarArvore(), que marcava morto=true e fazia o `close` retornar SEM
@@ -266,12 +301,14 @@ function rodar(cmd, esperaSeg, bg) {
        muda. Era esse o "teto de ~39 KB do túnel" — nada a ver com o WebSocket.
        Agora coleta até 8 MB (base64 de ~6 MB), marca truncado=true e responde. */
     filho.stdout && filho.stdout.on("data", (b) => {
-      if (stdout.length >= TETO_STDOUT) { truncado = true; return; }
-      stdout += b;
+      if (bytesOut >= TETO_STDOUT) { truncado = true; return; }
+      partesOut.push(b);
+      bytesOut += b.length;
     });
     filho.stderr && filho.stderr.on("data", (b) => {
-      if (stderr.length >= TETO_STDERR) return;
-      stderr += b;
+      if (bytesErr >= TETO_STDERR) return;
+      partesErr.push(b);
+      bytesErr += b.length;
     });
     filho.on("error", (e) => {
       clearTimeout(rel);
@@ -280,7 +317,12 @@ function rodar(cmd, esperaSeg, bg) {
     filho.on("close", (code) => {
       clearTimeout(rel);
       if (morto) return; // o timeout já resolveu com -124
-      resolve({ exit: code == null ? -9 : code, stdout: stdout.slice(0, TETO_STDOUT), stderr: stderr.slice(0, TETO_STDERR), truncado });
+      resolve({
+        exit: code == null ? -9 : code,
+        stdout: textoWindows(Buffer.concat(partesOut)).slice(0, TETO_STDOUT),
+        stderr: (textoWindows(Buffer.concat(partesErr)) + stderr).slice(0, TETO_STDERR),
+        truncado,
+      });
     });
   });
 }
