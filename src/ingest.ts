@@ -97,12 +97,20 @@ export async function processJob(job: JobRow): Promise<string> {
   let primeiroNovoId: number | null = null;
   try {
     const chunks = chunkText(job.content, CONFIG.maxChunkWords, CONFIG.chunkOverlap);
+    /* v3.54: reindexar NÃO pode desarquivar. O chunk novo nascia com
+       archived_at NULL e o documento arquivado voltava à busca comum. */
+    const arqAtual = await q<{ arquivado: boolean }>(
+      `SELECT (max(archived_at) IS NOT NULL) AS arquivado
+         FROM chunks WHERE tenant=$1 AND memoria=$2 AND doc_id=$3`,
+      [job.tenant, job.memoria, job.doc_id],
+    );
+    const nasceArquivado = arqAtual.rows[0]?.arquivado === true;
     for (let i = 0; i < chunks.length; i++) {
       const vetor = await embedUm(chunks[i]);
       const ins = await q<{ id: string }>(
-        `INSERT INTO chunks (tenant, memoria, doc_id, title, body, embedding)
-         VALUES ($1,$2,$3,$4,$5,$6::vector) RETURNING id`,
-        [job.tenant, job.memoria, job.doc_id, job.title, chunks[i], vetor],
+        `INSERT INTO chunks (tenant, memoria, doc_id, title, body, embedding, archived_at)
+         VALUES ($1,$2,$3,$4,$5,$6::vector, CASE WHEN $7::boolean THEN now() ELSE NULL END) RETURNING id`,
+        [job.tenant, job.memoria, job.doc_id, job.title, chunks[i], vetor, nasceArquivado],
       );
       const rid = Number(ins.rows[0].id);
       if (primeiroNovoId === null) primeiroNovoId = rid;

@@ -17,7 +17,7 @@ import {
   uploadArquivo,
 } from "./service";
 import { enqueueIngest } from "./ingest";
-import { listarAnexos } from "./anexos";
+import { criarAnexo, listarAnexos } from "./anexos";
 import { CONFIG } from "./config";
 import { healthAtual } from "./ferramentas";
 import { ocrDisponivel, ocrImagem } from "./ocr";
@@ -857,7 +857,16 @@ async function executarTool(
       }
       return enqueueIngest(args as never, user.tenant);
     case "ingest_status": {
-      const jobId = Number(args.job_id);
+      /* v3.54: sem job_id o Number(vazio) virava NaN e o erro saía do Postgres
+         ("invalid input syntax for type bigint") — valida antes. */
+      const bruto = args.job_id;
+      const jobId = Number(bruto);
+      if (
+        bruto === undefined || bruto === null || String(bruto).trim() === "" ||
+        !Number.isInteger(jobId) || jobId <= 0
+      ) {
+        throw new HttpError(422, "ingest_status: job_id obrigatorio (inteiro positivo) — veja o id em list_jobs");
+      }
       return jobParaUsuario(jobId, user, undefined);
     }
     case "list_docs":
@@ -877,7 +886,7 @@ async function executarTool(
       if (!/^[A-Za-z0-9+/=\s]+$/.test(b64)) throw new Error("conteudo_base64 invalido");
       const buf = Buffer.from(b64, "base64");
       if (!buf.length) throw new Error("conteudo_base64 vazio");
-      return uploadArquivo(
+      const enviado = await uploadArquivo(
         {
           nome: args.nome,
           mime: args.mime ?? null,
@@ -889,6 +898,14 @@ async function executarTool(
         },
         user,
       );
+      /* v3.54: o mesmo arquivo também vira ANEXO (canal navegador→máquina).
+         Antes só existia como documento e enviar_para_maquina não tinha id. */
+      const anexo = await criarAnexo(user, buf, {
+        nome: String(args.nome),
+        mime: args.mime ? String(args.mime) : undefined,
+        tenant: args.tenant ? String(args.tenant) : undefined,
+      });
+      return { ...enviado, anexo_id: anexo.id, anexo };
     }
     case "get_file": {
       const a = await getArquivoOriginal(args.doc_id, args.memoria ?? "", args.tenant ?? null, user);

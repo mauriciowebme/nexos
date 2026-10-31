@@ -420,9 +420,27 @@ export async function putDocument(
   if (!existe.rowCount) {
     throw erro404("documento nao existe nesta memoria (para criar, use POST /ingest)");
   }
+  /* v3.54: edição sem título HERDA o atual — antes o chunk renascia com
+     title vazio e a busca devolvia item sem título depois de edit_doc. */
+  let titulo = (body.title ?? "").trim();
+  if (!titulo) {
+    const rc = await q<{ title: string }>(
+      `SELECT coalesce(title,'') AS title FROM chunks
+        WHERE tenant=$1 AND memoria=$2 AND doc_id=$3 ORDER BY id LIMIT 1`,
+      [t, memoria, docId],
+    );
+    titulo = (rc.rows[0]?.title ?? "").trim();
+  }
+  if (!titulo) {
+    const rd = await q<{ title: string }>(
+      `SELECT coalesce(title,'') AS title FROM documents WHERE tenant=$1 AND memoria=$2 AND doc_id=$3`,
+      [t, memoria, docId],
+    );
+    titulo = (rd.rows[0]?.title ?? "").trim();
+  }
   const ing: IngestBody = {
     doc_id: docId,
-    title: body.title ?? null,
+    title: titulo || null,
     content: body.content,
     memoria: body.memoria ?? "",
   };
