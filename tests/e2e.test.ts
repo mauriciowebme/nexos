@@ -4187,6 +4187,112 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.fechar("v3.53");
   });
 
+  /* v3.58: anexo de imagem volta também como bloco `image` do protocolo MCP, além do texto.
+     O base64 vai só no bloco — no JSON texto inundaria o contexto do modelo. */
+  await bloco(t, "v3.58: anexo de imagem volta como bloco image no MCP", async () => {
+    const f = fiscal();
+    const mcp = (id: unknown, name: string, args: unknown) =>
+      call("POST", "/mcp", { key: OPKEY, corpo: { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } } });
+    /* JPEG 380x110 com texto legível (5.217 bytes): o OCR precisa aceitar para o upload_file
+       virar documento — o que se prova aqui é o BLOCO image, não o OCR. */
+    const JPG = Buffer.from(
+      "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA4KCw0LCQ4NDA0QDw4RFiQXFhQUFiwgIRokNC43NjMuMjI6QVNGOj1OPjIySGJJ" +
+      "TlZYXV5dOEVmbWVabFNbXVn/2wBDAQ8QEBYTFioXFypZOzI7WVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZ" +
+      "WVlZWVlZWVlZWVlZWVn/wAARCABuAXwDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAA" +
+      "AgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6" +
+      "Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXG" +
+      "x8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREA" +
+      "AgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5" +
+      "OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPE" +
+      "xcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD0miiigAooooAKKKKACiiigAooooAKKKKA" +
+      "CiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKA" +
+      "CiioL6RorG4kjOHSJmU+hAoAnorxIePPEgIJ1EH2MEfP/jtevaJqcWsaTb30PAlXLL/dboR+BoAv0V5N4n8Ya7YeIr61tb7y" +
+      "4IpNqL5MZwMDuVzXpss0i6Q84bEogLhsd9uc0AXKK8Uh8beKZ5Vihvnlkc4VEtoyWPoAFq//AG34+/55ah/4Lx/8RQB65RXP" +
+      "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",
+      "base64",
+    );
+    let r = await mcp(1, "upload_file", { nome: "suite-mcp-imagem.jpg", mime: "image/jpeg", conteudo_base64: JPG.toString("base64"), memoria: "suite-mcp-img" });
+    let c = (r.json?.result?.content ?? []) as any[];
+    f.check("imagem: 2 blocos (texto + image)", c.length === 2, `len=${c.length} :: ${String(c[0]?.text ?? "").slice(0, 200)}`);
+    f.check("imagem: bloco[1].type = image", c[1]?.type === "image", c[1]?.type);
+    f.check("imagem: mimeType image/jpeg", c[1]?.mimeType === "image/jpeg", c[1]?.mimeType);
+    const voltou = Buffer.from(String(c[1]?.data ?? ""), "base64");
+    f.check("imagem: base64 decodifica em FF D8 FF", voltou.subarray(0, 3).toString("hex") === "ffd8ff", voltou.subarray(0, 3).toString("hex"));
+    f.check("imagem: bytes do bloco iguais ao arquivo enviado", voltou.equals(JPG), `${voltou.length} vs ${JPG.length}`);
+    f.check("imagem: texto NÃO carrega o base64", !String(c[0]?.text ?? "").includes(JPG.toString("base64").slice(0, 40)), `${String(c[0]?.text ?? "").length} chars`);
+
+    r = await mcp(2, "health", {});
+    c = (r.json?.result?.content ?? []) as any[];
+    f.check("tool de texto (health): 1 bloco", c.length === 1 && c[0]?.type === "text", `len=${c.length}`);
+
+    const txt = Buffer.from("anexo de texto do teste v3.58\n", "utf8");
+    r = await mcp(3, "upload_file", { nome: "suite-mcp-texto.txt", mime: "text/plain", conteudo_base64: txt.toString("base64"), memoria: "suite-mcp-img" });
+    c = (r.json?.result?.content ?? []) as any[];
+    f.check("anexo não-imagem: 1 bloco de texto", c.length === 1 && c[0]?.type === "text", `len=${c.length} :: ${String(c[0]?.text ?? "").slice(0, 160)}`);
+
+    f.fechar("v3.58");
+  });
+
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {
     const f = fiscal();
     for (let i = 0; i < 10; i++) {
