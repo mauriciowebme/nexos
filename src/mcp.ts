@@ -17,7 +17,8 @@ import {
   uploadArquivo,
 } from "./service";
 import { enqueueIngest } from "./ingest";
-import { criarAnexo, listarAnexos } from "./anexos";
+import { abrirAnexo, criarAnexo, listarAnexos } from "./anexos";
+import fsp from "node:fs/promises";
 import { CONFIG } from "./config";
 import { healthAtual } from "./ferramentas";
 import { ocrDisponivel, ocrImagem } from "./ocr";
@@ -759,10 +760,29 @@ const falha = (id: unknown, code: number, message: string) => ({
   id,
   error: { code, message },
 });
-const toolOk = (data: unknown) => ({
-  content: [{ type: "text", text: JSON.stringify(data) }],
-  isError: false,
-});
+/* v3.58: anexo de IMAGEM volta também como bloco `image` do protocolo MCP, além do
+   texto. O base64 vai SÓ no bloco image (no JSON texto inundaria o contexto do modelo).
+   Cliente que não usa imagem ignora o bloco; falha ao ler o anexo não derruba a tool. */
+const MAX_IMAGEM_MCP = 10 * 1024 * 1024;
+async function toolOk(resultado: any, user: Usuario) {
+  const content: any[] = [{ type: "text", text: JSON.stringify(resultado) }];
+  const a = resultado?.anexo;
+  if (
+    a?.id &&
+    typeof a.mime === "string" &&
+    a.mime.startsWith("image/") &&
+    Number(a.bytes) <= MAX_IMAGEM_MCP
+  ) {
+    try {
+      const m = await abrirAnexo(String(a.id), user);
+      const buf = await fsp.readFile(m.caminho);
+      content.push({ type: "image", data: buf.toString("base64"), mimeType: m.mime || "image/jpeg" });
+    } catch {
+      /* segue só com o texto */
+    }
+  }
+  return { content, isError: false };
+}
 const toolErro = (text: string) => ({ content: [{ type: "text", text }], isError: true });
 
 function initialize(params: Row) {
@@ -1091,7 +1111,7 @@ export async function despachar(msg: any, deps: McpDeps): Promise<unknown | null
     }
     try {
       const resultado = await executarTool(params.name, params.arguments ?? {}, user, deps);
-      return ok(id, toolOk(resultado));
+      return ok(id, await toolOk(resultado, user));
     } catch (e) {
       if (e instanceof HttpError) return ok(id, toolErro(`erro ${e.status}: ${e.detail}`));
       return ok(id, toolErro(String((e as Error).message ?? e)));
