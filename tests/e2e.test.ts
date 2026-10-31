@@ -3268,6 +3268,21 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     r = await call("PUT", "/config/instrucoes", { key: TESTKEY, corpo: { texto: "tentativa do comum" } });
     f.check("usuário comum NÃO troca as instruções da conta (403)", r.status === 403, r.texto.slice(0, 120));
 
+    /* v3.55 — rodadas, memória e intactas são da CONTA como as instruções: a tela os mostra no
+       card do topo e salva pela MESMA rota. O provider não pode zerá-los ao salvar sem eles.
+       A linha do tenant PRÓPRIO (descartável, para não sujar o 'teste' dos outros blocos) precisa estar COMPLETA (base_url + modelo) antes da releitura: pela regra
+       v2.8 o GET mostra a linha global enquanto a própria está pela metade. */
+    r = await call("PUT", "/config/provider", { key: OPKEY, corpo: { tenant: "teste355", tipo: "openai", base_url: "http://127.0.0.1:9/v1", modelo: "m355", temperatura: 0.3 } });
+    f.check("provider do cliente salvo completo (a releitura passa a mostrar a linha própria)", r.status === 200 && r.json?.escopo === "teste355", r.texto.slice(0, 160));
+    r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { texto: "PROMPT-DA-CONTA-335", tenant: "teste355", max_rodadas: 7, memoria_turnos: 15, verbatim_turnos: 6 } });
+    f.check("instruções + comportamento salvam juntos (rodadas/memória/intactas)", r.status === 200 && r.json?.max_rodadas === 7 && r.json?.memoria_turnos === 15 && r.json?.verbatim_turnos === 6, r.texto.slice(0, 200));
+    r = await call("GET", "/config/provider?tenant=teste355", { key: OPKEY });
+    f.check("a releitura devolve os três gravados pela rota das instruções", r.json?.max_rodadas === 7 && r.json?.memoria_turnos === 15 && r.json?.verbatim_turnos === 6, r.texto.slice(0, 200));
+    r = await call("PUT", "/config/provider", { key: OPKEY, corpo: { tenant: "teste355", tipo: "openai", base_url: "http://127.0.0.1:9/v1", modelo: "m355", temperatura: 0.3 } });
+    f.check("salvar o provider SEM os três PRESERVA o que a conta gravou", r.status === 200 && r.json?.max_rodadas === 7 && r.json?.memoria_turnos === 15 && r.json?.verbatim_turnos === 6, r.texto.slice(0, 200));
+    r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tenant: "teste355", texto: "x", max_rodadas: 99 } });
+    f.check("rodadas fora da faixa: 422 (não grava 99)", r.status === 422, r.texto.slice(0, 160));
+
     r = await call("POST", "/chat", { key: TESTKEY, corpo: { pergunta: "oi sonda", memoria: GAV, provedor: "sonda319", modelo: "sonda-b" } });
     f.check("resposta VEIO do provedor escolhido (modelo pedido no lugar do cadastrado)", r.status === 200 && String(r.json?.resposta).includes("sonda:sonda-b"), r.texto.slice(0, 200));
     f.check("o provedor NOMEADO recebe as instruções da CONTA no system", /sys:PROMPT-DA-CONTA-335/.test(String(r.json?.resposta)), r.texto.slice(0, 220));
