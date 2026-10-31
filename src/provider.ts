@@ -15,7 +15,7 @@ import { Usuario, log, tenantFor } from "./config";
 import { REGRAS_CASA } from "./regras";
 import { erro409, erro422 } from "./errors";
 import { q } from "./db";
-import { apertarRodada, custoDoPayload, type MsgChat, montarPayload } from "./compactar";
+import { apertarRodada, custoDoPayload, type MsgChat, montarPayload, OPCOES_PADRAO, type Opcoes } from "./compactar";
 import { abrirAnexo, type AnexoMeta } from "./anexos";
 import { MAX_TELAS_TURNO, htmlParcial, type Tela } from "./telas";
 import {
@@ -34,9 +34,15 @@ const LIMITE_PROMPT = 8000;
 export const RODADAS_PADRAO = 5;
 /* v3.0 — memória e orçamento de contexto (heurística de tokens em compactar.ts) */
 export const MEMORIA_PADRAO = 12; // turnos antigos que voltam ao modelo (0 = sem memória, como na v2.9)
-export const VERBATIM_PADRAO = 4; // quantos deles ficam intactos na compactação
+export const VERBATIM_PADRAO = 20; // v3.56 — = protect_last_n do mini-compress (últimas verbatim)
 export const RESERVA_PADRAO = 1024; // tokens livres para a resposta
 export const JANELA_PADRAO = 8192; // usada quando nem o painel nem a detecção informaram
+/* v3.56 — opções da compactação, iguais às do mini-compress do Hermes (context.engine_options) */
+export const THRESHOLD_K_PADRAO = 200; // milhares de tokens (200 = 200k; 0 = nunca)
+export const TAIL_CHARS_CAP_PADRAO = 80_000; // parte C (20K tokens)
+export const PAIRS_BLOCK_CAP_PADRAO = 40_000; // parte B (10K tokens)
+export const SUMMARY_CHARS_CAP_PADRAO = 12_000; // parte A (3K tokens)
+export const MAX_PAIRS_PADRAO = 8;
 /* v3.2 — o que derruba uma conversa não é a resposta ser LONGA, é ela PARAR de vir.
    Modelo local escreve por minutos e isso é legítimo; o teto total antigo de 90s cortava no meio
    e o painel mostrava "The operation was aborted due to timeout" (visto em produção em 21/10).
@@ -57,6 +63,12 @@ type Linha = {
   max_rodadas: number;
   memoria_turnos: number | null;
   verbatim_turnos: number | null;
+  /* v3.56 — opções da compactação (mesmas chaves do mini-compress) */
+  threshold_k: number | null;
+  tail_chars_cap: number | null;
+  pairs_block_cap: number | null;
+  summary_chars_cap: number | null;
+  max_pairs: number | null;
   reserva_tokens: number | null;
   contexto_tokens: number | null;
   contexto_detectado: number | null;
@@ -79,6 +91,8 @@ export type CfgResolvida = {
   max_rodadas: number;
   memoria_turnos: number;
   verbatim_turnos: number;
+  /** v3.56 — opções da compactação (da CONTA, como o system prompt) */
+  comp: Opcoes;
   reserva_tokens: number;
   /** v3.2: segundos que o provider pode ficar sem escrever nada antes de eu desistir (0 = padrão) */
   silencio_s: number;
@@ -118,6 +132,13 @@ export async function initProvider(): Promise<void> {
      contexto_tokens/contexto_detectado ficam NULL até alguém configurar ou o teste de conexão detectar. */
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS memoria_turnos INT NOT NULL DEFAULT ${MEMORIA_PADRAO}`);
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS verbatim_turnos INT NOT NULL DEFAULT ${VERBATIM_PADRAO}`);
+  /* v3.56 — compactação com a mecânica do mini-compress: gatilho + tetos por parte (A/B/C).
+     São da CONTA (como o system prompt), não do provider: valem para qualquer modelo escolhido. */
+  await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS threshold_k INT NOT NULL DEFAULT ${THRESHOLD_K_PADRAO}`);
+  await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS tail_chars_cap INT NOT NULL DEFAULT ${TAIL_CHARS_CAP_PADRAO}`);
+  await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS pairs_block_cap INT NOT NULL DEFAULT ${PAIRS_BLOCK_CAP_PADRAO}`);
+  await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS summary_chars_cap INT NOT NULL DEFAULT ${SUMMARY_CHARS_CAP_PADRAO}`);
+  await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS max_pairs INT NOT NULL DEFAULT ${MAX_PAIRS_PADRAO}`);
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS reserva_tokens INT NOT NULL DEFAULT ${RESERVA_PADRAO}`);
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS contexto_tokens INT`);
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS contexto_detectado INT`);
@@ -183,6 +204,8 @@ function cfgDeProvedorLinha(l: Record<string, any> | undefined): CfgResolvida | 
     max_rodadas: Number(l.max_rodadas ?? RODADAS_PADRAO),
     memoria_turnos: Number(l.memoria_turnos ?? MEMORIA_PADRAO),
     verbatim_turnos: Number(l.verbatim_turnos ?? VERBATIM_PADRAO),
+    /* preenchido por resolverProvider com as opções da CONTA */
+    comp: { ...OPCOES_PADRAO },
     reserva_tokens: Number(l.reserva_tokens ?? RESERVA_PADRAO),
     silencio_s: Number(l.silencio_s ?? 0),
     ...planoDeJanela(l as unknown as Linha),
@@ -197,6 +220,9 @@ export async function resolverProvider(
   tenant: string,
   escolha?: { provedor?: string; modelo?: string },
 ): Promise<CfgResolvida | null> {
+  /* v3.56 — a compactação é da CONTA (como as instruções): vale igual para provider
+     nomeado, padrão da casa ou linha própria. */
+  const comp = await lerOpcoesCompactacao(tenant);
   const nome = String(escolha?.provedor ?? "").trim();
   if (nome) {
     const r = await q<Linha>(
@@ -219,6 +245,7 @@ export async function resolverProvider(
       }
       cfg.modelo = modelo;
     }
+    cfg.comp = comp;
     return cfg;
   }
   /* v3.19: um nomeado marcado como "padrão" do escopo manda no provider_config */
@@ -231,6 +258,7 @@ export async function resolverProvider(
   const modeloSolto = String(escolha?.modelo ?? "").trim();
   if (viaPadrao) {
     if (modeloSolto) viaPadrao.modelo = modeloSolto;
+    viaPadrao.comp = comp;
     return viaPadrao;
   }
   const r = await q<Linha>(
@@ -257,6 +285,7 @@ export async function resolverProvider(
     max_rodadas: Number(l.max_rodadas ?? RODADAS_PADRAO),
     memoria_turnos: Number(l.memoria_turnos ?? MEMORIA_PADRAO),
     verbatim_turnos: Number(l.verbatim_turnos ?? VERBATIM_PADRAO),
+    comp,
     reserva_tokens: Number(l.reserva_tokens ?? RESERVA_PADRAO),
     silencio_s: Number(l.silencio_s ?? 0),
     ...planoDeJanela(l),
@@ -277,11 +306,47 @@ export async function lerInstrucoes(tenant: string): Promise<string> {
   return String(r.rows[0]?.system_prompt ?? "");
 }
 
+/** v3.56 — opções da compactação da CONTA (linha própria vence a global), com os
+ *  mesmos nomes/faixas do mini-compress: threshold_k, protect_last_n, tail_chars_cap,
+ *  pairs_block_cap, summary_chars_cap, max_pairs. */
+export function opcoesDaLinha(l: Linha | null | undefined): Opcoes {
+  if (!l) return { ...OPCOES_PADRAO };
+  const n = (v: unknown, padrao: number): number => (Number.isFinite(Number(v)) ? Number(v) : padrao);
+  return {
+    thresholdK: n(l.threshold_k, OPCOES_PADRAO.thresholdK),
+    protectLastN: n(l.verbatim_turnos, OPCOES_PADRAO.protectLastN),
+    tailCharsCap: n(l.tail_chars_cap, OPCOES_PADRAO.tailCharsCap),
+    pairsBlockCap: n(l.pairs_block_cap, OPCOES_PADRAO.pairsBlockCap),
+    summaryCharsCap: n(l.summary_chars_cap, OPCOES_PADRAO.summaryCharsCap),
+    maxPairs: n(l.max_pairs, OPCOES_PADRAO.maxPairs),
+  };
+}
+
+export async function lerOpcoesCompactacao(tenant: string): Promise<Opcoes> {
+  const r = await q<Linha>(
+    `SELECT * FROM provider_config WHERE escopo IN ($1, $2)
+     ORDER BY (escopo = $1) DESC LIMIT 1`,
+    [tenant, GLOBAL],
+  );
+  return opcoesDaLinha(r.rows[0]);
+}
+
 /** Grava as instruções e o comportamento do agente (v3.55: rodadas, memória e intactas
  *  também são da CONTA — a tela os mostra junto do system prompt, não no formulário do provider). */
 export async function salvarInstrucoes(
   user: Usuario,
-  body: { texto?: unknown; tenant?: unknown; max_rodadas?: unknown; memoria_turnos?: unknown; verbatim_turnos?: unknown },
+  body: {
+    texto?: unknown;
+    tenant?: unknown;
+    max_rodadas?: unknown;
+    memoria_turnos?: unknown;
+    verbatim_turnos?: unknown;
+    threshold_k?: unknown;
+    tail_chars_cap?: unknown;
+    pairs_block_cap?: unknown;
+    summary_chars_cap?: unknown;
+    max_pairs?: unknown;
+  },
 ): Promise<{
   escopo: string;
   system_prompt: string;
@@ -290,6 +355,7 @@ export async function salvarInstrucoes(
   max_rodadas: number;
   memoria_turnos: number;
   verbatim_turnos: number;
+  comp: Opcoes;
 }> {
   const escopo = tenantFor(user, typeof body.tenant === "string" ? body.tenant : null);
   const anterior = (await q<Linha>(`SELECT * FROM provider_config WHERE escopo = $1`, [escopo])).rows[0];
@@ -312,13 +378,23 @@ export async function salvarInstrucoes(
     throw erro422("max_rodadas deve ser um número entre 0 e 60");
   }
   const memoriaTurnos = inteiro(body.memoria_turnos, anterior?.memoria_turnos ?? MEMORIA_PADRAO, "memoria_turnos", 0, 100);
-  const verbatimTurnos = inteiro(body.verbatim_turnos, anterior?.verbatim_turnos ?? VERBATIM_PADRAO, "verbatim_turnos", 0, 40);
+  const verbatimTurnos = inteiro(body.verbatim_turnos, anterior?.verbatim_turnos ?? VERBATIM_PADRAO, "verbatim_turnos", 0, 50);
+  /* v3.56 — opções da compactação, com as MESMAS faixas do mini-compress */
+  const thresholdK = inteiro(body.threshold_k, anterior?.threshold_k ?? THRESHOLD_K_PADRAO, "threshold_k", 0, 2000);
+  const tailCharsCap = inteiro(body.tail_chars_cap, anterior?.tail_chars_cap ?? TAIL_CHARS_CAP_PADRAO, "tail_chars_cap", 2000, 400000);
+  const pairsBlockCap = inteiro(body.pairs_block_cap, anterior?.pairs_block_cap ?? PAIRS_BLOCK_CAP_PADRAO, "pairs_block_cap", 2000, 200000);
+  const summaryCharsCap = inteiro(body.summary_chars_cap, anterior?.summary_chars_cap ?? SUMMARY_CHARS_CAP_PADRAO, "summary_chars_cap", 2000, 100000);
+  const maxPairs = inteiro(body.max_pairs, anterior?.max_pairs ?? MAX_PAIRS_PADRAO, "max_pairs", 0, 20);
   await q(
-    `INSERT INTO provider_config (escopo, base_url, modelo, system_prompt, max_rodadas, memoria_turnos, verbatim_turnos)
-     VALUES ($1, '', '', $2, $3, $4, $5)
+    `INSERT INTO provider_config (escopo, base_url, modelo, system_prompt, max_rodadas, memoria_turnos, verbatim_turnos,
+       threshold_k, tail_chars_cap, pairs_block_cap, summary_chars_cap, max_pairs)
+     VALUES ($1, '', '', $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (escopo) DO UPDATE SET system_prompt = EXCLUDED.system_prompt, max_rodadas = EXCLUDED.max_rodadas,
-       memoria_turnos = EXCLUDED.memoria_turnos, verbatim_turnos = EXCLUDED.verbatim_turnos, atualizado_em = now()`,
-    [escopo, texto, maxRodadas, memoriaTurnos, verbatimTurnos],
+       memoria_turnos = EXCLUDED.memoria_turnos, verbatim_turnos = EXCLUDED.verbatim_turnos,
+       threshold_k = EXCLUDED.threshold_k, tail_chars_cap = EXCLUDED.tail_chars_cap,
+       pairs_block_cap = EXCLUDED.pairs_block_cap, summary_chars_cap = EXCLUDED.summary_chars_cap,
+       max_pairs = EXCLUDED.max_pairs, atualizado_em = now()`,
+    [escopo, texto, maxRodadas, memoriaTurnos, verbatimTurnos, thresholdK, tailCharsCap, pairsBlockCap, summaryCharsCap, maxPairs],
   );
   return {
     escopo,
@@ -328,6 +404,14 @@ export async function salvarInstrucoes(
     max_rodadas: maxRodadas,
     memoria_turnos: memoriaTurnos,
     verbatim_turnos: verbatimTurnos,
+    comp: {
+      thresholdK,
+      protectLastN: verbatimTurnos,
+      tailCharsCap,
+      pairsBlockCap,
+      summaryCharsCap,
+      maxPairs,
+    },
   };
 }
 
@@ -361,6 +445,9 @@ export async function verProvider(user: Usuario, tenantArg?: string | null) {
     max_rodadas: l ? Number(l.max_rodadas ?? RODADAS_PADRAO) : RODADAS_PADRAO,
     memoria_turnos: l ? Number(l.memoria_turnos ?? MEMORIA_PADRAO) : MEMORIA_PADRAO,
     verbatim_turnos: l ? Number(l.verbatim_turnos ?? VERBATIM_PADRAO) : VERBATIM_PADRAO,
+    /* v3.56 — compactação (é da CONTA, igual às instruções): lê com a MESMA precedência
+       de `lerInstrucoes` (linha própria vence a global), não a linha que serve o provider */
+    comp: await lerOpcoesCompactacao(tenant),
     reserva_tokens: l ? Number(l.reserva_tokens ?? RESERVA_PADRAO) : RESERVA_PADRAO,
     silencio_s: l ? Number(l.silencio_s ?? 0) : 0,
     silencio_efetivo_s: l && Number(l.silencio_s) > 0 ? Number(l.silencio_s) : SILENCIO_PADRAO_S,
@@ -963,7 +1050,7 @@ export async function responderChat(
     toolsTokens,
     janela: cfg.janela,
     reserva: cfg.reserva_tokens,
-    verbatim: cfg.verbatim_turnos,
+    opcoes: cfg.comp,
   });
   const mensagens: Mensagem[] = plano.mensagens as Mensagem[];
   /* v3.46: a nota vai só para o que o MODELO lê; `pergunta` continua limpa para a
@@ -981,7 +1068,11 @@ export async function responderChat(
   const compactacao = {
     memoria_turnos: cfg.memoria_turnos,
     historico_lido: historico.length,
+    /* v3.56: a compactação só age no gatilho (min(threshold_k, 90% da janela)) */
+    compactou: plano.compactou,
+    gatilho: plano.gatilho,
     resumidas: plano.resumidas,
+    pares: plano.pares,
     aparadas: plano.cortadas,
     descartadas: plano.descartadas,
     tokens: plano.tokens,
@@ -1092,7 +1183,7 @@ export async function responderChat(
         janela: cfg.janela,
         reserva: cfg.reserva_tokens,
         toolsTokens,
-        verbatim: cfg.verbatim_turnos,
+        verbatim: cfg.comp.protectLastN,
       });
       mensagens.length = 0;
       mensagens.push(...(apertado.mensagens as Mensagem[]));
