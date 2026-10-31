@@ -277,23 +277,58 @@ export async function lerInstrucoes(tenant: string): Promise<string> {
   return String(r.rows[0]?.system_prompt ?? "");
 }
 
-/** Grava SÓ as instruções (a tela salva esse campo sozinho, sem tocar no provider). */
+/** Grava as instruções e o comportamento do agente (v3.55: rodadas, memória e intactas
+ *  também são da CONTA — a tela os mostra junto do system prompt, não no formulário do provider). */
 export async function salvarInstrucoes(
   user: Usuario,
-  body: { texto?: unknown; tenant?: unknown },
-): Promise<{ escopo: string; system_prompt: string; tem_system_prompt: boolean; regras_padrao: string }> {
+  body: { texto?: unknown; tenant?: unknown; max_rodadas?: unknown; memoria_turnos?: unknown; verbatim_turnos?: unknown },
+): Promise<{
+  escopo: string;
+  system_prompt: string;
+  tem_system_prompt: boolean;
+  regras_padrao: string;
+  max_rodadas: number;
+  memoria_turnos: number;
+  verbatim_turnos: number;
+}> {
   const escopo = tenantFor(user, typeof body.tenant === "string" ? body.tenant : null);
-  const texto = String(body.texto ?? "");
+  const anterior = (await q<Linha>(`SELECT * FROM provider_config WHERE escopo = $1`, [escopo])).rows[0];
+  /* texto ausente = preserva o que está gravado (a tela pode salvar só os números) */
+  const texto = body.texto === undefined ? String(anterior?.system_prompt ?? "") : String(body.texto ?? "");
   if (texto.length > LIMITE_PROMPT) {
     throw erro422(`as instruções do modelo têm no máximo ${LIMITE_PROMPT} caracteres`);
   }
+  /* mesmas faixas do salvarProvider: sem isso a tela aceitaria 999 rodadas e o agente rodaria solto */
+  const inteiro = (v: unknown, antes: unknown, nome: string, min: number, max: number): number => {
+    if (v === undefined || v === null || v === "") return Number(antes ?? 0);
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < min || n > max) throw erro422(`${nome} deve ser um número entre ${min} e ${max}`);
+    return n;
+  };
+  const maxRodadas = body.max_rodadas === undefined
+    ? Number(anterior?.max_rodadas ?? RODADAS_PADRAO)
+    : Number(body.max_rodadas);
+  if (!Number.isInteger(maxRodadas) || maxRodadas < 0 || maxRodadas > 60) {
+    throw erro422("max_rodadas deve ser um número entre 0 e 60");
+  }
+  const memoriaTurnos = inteiro(body.memoria_turnos, anterior?.memoria_turnos ?? MEMORIA_PADRAO, "memoria_turnos", 0, 100);
+  const verbatimTurnos = inteiro(body.verbatim_turnos, anterior?.verbatim_turnos ?? VERBATIM_PADRAO, "verbatim_turnos", 0, 40);
   await q(
-    `INSERT INTO provider_config (escopo, base_url, modelo, system_prompt)
-     VALUES ($1, '', '', $2)
-     ON CONFLICT (escopo) DO UPDATE SET system_prompt = EXCLUDED.system_prompt, atualizado_em = now()`,
-    [escopo, texto],
+    `INSERT INTO provider_config (escopo, base_url, modelo, system_prompt, max_rodadas, memoria_turnos, verbatim_turnos)
+     VALUES ($1, '', '', $2, $3, $4, $5)
+     ON CONFLICT (escopo) DO UPDATE SET system_prompt = EXCLUDED.system_prompt, max_rodadas = EXCLUDED.max_rodadas,
+       memoria_turnos = EXCLUDED.memoria_turnos, verbatim_turnos = EXCLUDED.verbatim_turnos, atualizado_em = now()`,
+    [escopo, texto, maxRodadas, memoriaTurnos, verbatimTurnos],
   );
-  return { escopo, system_prompt: texto, tem_system_prompt: Boolean(texto.trim()), regras_padrao: REGRAS_CASA };
+  return {
+    escopo,
+    system_prompt: texto,
+    tem_system_prompt: Boolean(texto.trim()),
+    regras_padrao: REGRAS_CASA,
+    max_rodadas: maxRodadas,
+    memoria_turnos: memoriaTurnos,
+    verbatim_turnos: verbatimTurnos,
+  };
 }
 
 /** O que o painel pode ver: tudo menos a chave em claro. */
