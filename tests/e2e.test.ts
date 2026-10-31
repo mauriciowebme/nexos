@@ -1860,6 +1860,40 @@ test("nexos v2 — suíte completa", async (t) => {
     r = await call("PUT", "/config/provider", { key: OPKEY, corpo: { ...base, contexto_tokens: 40000000 } });
     f.check("janela absurda recusada com 422", r.status === 422, r.status);
 
+    /* ---------------------------------------------- 1b. compactação estilo mini-compress (v3.56) */
+    r = await call("PUT", "/config/instrucoes", {
+      key: OPKEY,
+      corpo: {
+        texto: "PROMPT-DE-INSTRUCAO",
+        threshold_k: 120,
+        tail_chars_cap: 60000,
+        pairs_block_cap: 30000,
+        summary_chars_cap: 9000,
+        max_pairs: 6,
+      },
+    });
+    f.check(
+      "opções da compactação salvam pela rota das instruções",
+      r.status === 200 && r.json?.comp?.thresholdK === 120 && r.json?.comp?.tailCharsCap === 60000 &&
+        r.json?.comp?.pairsBlockCap === 30000 && r.json?.comp?.summaryCharsCap === 9000 && r.json?.comp?.maxPairs === 6,
+      r.json?.comp,
+    );
+    r = await call("GET", "/config/provider", { key: OPKEY });
+    f.check(
+      "o GET devolve as opções da compactação (a tela abre preenchida)",
+      r.json?.comp?.thresholdK === 120 && r.json?.comp?.maxPairs === 6,
+      r.json?.comp,
+    );
+    r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tail_chars_cap: 100 } });
+    f.check("teto abaixo do mínimo recusado com 422", r.status === 422 && String(r.texto).includes("tail_chars_cap"), r.texto.slice(0, 120));
+    r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { max_pairs: 99 } });
+    f.check("max_pairs acima do teto recusado com 422", r.status === 422 && String(r.texto).includes("max_pairs"), r.texto.slice(0, 120));
+    /* volta aos padrões do mini-compress para o resto do bloco não herdar os valores do teste */
+    await call("PUT", "/config/instrucoes", {
+      key: OPKEY,
+      corpo: { texto: "PROMPT-DE-INSTRUCAO", threshold_k: 200, tail_chars_cap: 80000, pairs_block_cap: 40000, summary_chars_cap: 12000, max_pairs: 8 },
+    });
+
     /* ---------------------------------------------- 2. memória: o payload que chega ao modelo */
     await call("PUT", "/config/provider", { key: OPKEY, corpo: { ...base, system_prompt: "PROMPT-DE-INSTRUCAO", memoria_turnos: 0, verbatim_turnos: 2, reserva_tokens: 60, contexto_tokens: 4000 } });
     await call("DELETE", `/chat?memoria=${GAV}`, { key: OPKEY });
@@ -1883,21 +1917,33 @@ test("nexos v2 — suíte completa", async (t) => {
     await call("DELETE", `/chat?memoria=`, { key: OPKEY });
 
     r = await call("POST", "/chat", { key: OPKEY, corpo: { pergunta: "terceira", memoria: GAV } });
-    f.check("a resposta traz a contabilidade da compactação", r.json?.compactacao && r.json.compactacao.historico_lido >= 2 && r.json.compactacao.resumidas >= 1 && r.json.compactacao.memoria_turnos === 12, r.json?.compactacao);
+    f.check("a resposta traz a contabilidade da compactação", r.json?.compactacao && r.json.compactacao.historico_lido >= 2 && r.json.compactacao.memoria_turnos === 12, r.json?.compactacao);
+    /* v3.56 — o gatilho é a regra: conversa pequena com janela de 4000 fica MUITO abaixo
+       de min(threshold_k, 90% da janela) = 3600 tokens, então NADA é resumido. */
+    f.check("abaixo do gatilho nada é compactado (histórico inteiro no payload)", r.json?.compactacao?.compactou === false && r.json.compactacao.resumidas === 0 && r.json.compactacao.pares === 0 && r.json.compactacao.gatilho === 3600, r.json?.compactacao);
 
     /* ---------------------------------------------- 3. compactação determinística (sem LLM) */
+    /* enchimento: o gatilho é por TAMANHO — com janela de 300 o limiar é 270 tokens, então
+       a gaveta precisa passar disso para a cascata agir de verdade */
+    for (let i = 0; i < 3; i++) {
+      await call("POST", "/chat", { key: OPKEY, corpo: { memoria: GAV, pergunta: `enchimento ${i} ` + "texto longo para empurrar o contexto ".repeat(24) } });
+    }
     await call("PUT", "/config/provider", { key: OPKEY, corpo: { ...base, system_prompt: "PROMPT-DE-INSTRUCAO", memoria_turnos: 12, verbatim_turnos: 0, reserva_tokens: 60, contexto_tokens: 300 } });
     const antes = await call("GET", `/chat?memoria=${GAV}`, { key: OPKEY });
     e = await eco({ pergunta: "quarta depois do historico grande" });
     const disponivelChars = (300 - 60) * 4;
     f.check("a chamada compactada respondeu normal (200)", e.r.status === 200, e.r.status);
     f.check("o payload enviado coube no orçamento", e.p.chars <= disponivelChars, { chars: e.p.chars, teto: disponivelChars });
-    f.check("verbatim 0: nenhuma mensagem antiga passou inteira", e.p.maxlinha <= 200, { maior_linha: e.p.maxlinha });
+    f.check(
+      "o histórico não passou inteiro (a cascata agiu)",
+      e.p.n < (antes.json?.mensagens ?? []).length,
+      { no_payload: e.p.n, no_banco: (antes.json?.mensagens ?? []).length },
+    );
     r = await call("POST", "/chat", { key: OPKEY, corpo: { pergunta: "quinta", memoria: GAV } });
     const c = r.json?.compactacao ?? {};
-    f.check("compactação resumiu mensagens antigas (não jogou tudo fora)", c.resumidas >= 1 && c.historico_lido > 0, c);
+    f.check("compactação agiu (resumo e/ou pares e/ou descarte contados)", (c.resumidas ?? 0) + (c.pares ?? 0) + (c.descartadas ?? 0) >= 1 && c.historico_lido > 0, c);
     f.check("o system prompt NUNCA é comprimido (continua integral no payload)", String(e.p.primeiro).startsWith("PROMPT-DE-INSTRU") && e.p.papeis.startsWith("system,user"), e.p);
-    f.check("números batem: o que saiu do payload foi contado", (c.resumidas ?? 0) + (c.descartadas ?? 0) >= 1 && c.janela === 300 && c.origem_janela === "configurada", c);
+    f.check("números batem: o que saiu do payload foi contado", (c.resumidas ?? 0) + (c.pares ?? 0) + (c.descartadas ?? 0) >= 1 && c.janela === 300 && c.origem_janela === "configurada", c);
     f.check("histórico gravado na tela permanece íntegro (compactação não reescreve o banco)", (antes.json?.mensagens ?? []).length >= 6, (antes.json?.mensagens ?? []).length);
 
     /* ---------------------------------------------- 4. quando nem assim cabe, avisa em vez de estourar */
