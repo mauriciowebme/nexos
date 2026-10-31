@@ -1,6 +1,6 @@
 # Próximos passos — Nexos
 
-> **Última atualização:** 2026-10-30 · **Versão:** 3.52.0 · **Dono:** Mauricio
+> **Última atualização:** 2026-10-31 · **Versão:** 3.54.0 · **Dono:** Mauricio
 
 Este arquivo tem **só o que está em aberto** — as tarefas entregues foram removidas na limpeza de
 30/10 (o histórico fica no `git log`). Execução de qualquer T### exige OK explícito do Mauricio.
@@ -16,6 +16,7 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 
 | Versão | O que corrigiu | Como foi achado |
 |---|---|---|
+| 3.54.0 | Quatro defeitos da varredura das 57: `ingest_status` sem `job_id` estourava o Postgres (`invalid input syntax for type bigint: "NaN"`) e agora responde 422 pedindo o parâmetro; `edit_doc` sem título apagava o título do chunk (busca devolvia `title: ""`) e agora herda o atual; reindexar documento arquivado o desarquivava em silêncio (chunk novo nascia com `archived_at` NULL) e agora preserva o estado; `upload_file` não devolvia `anexo_id`, então `enviar_para_maquina` não encadeava — agora devolve e o arquivo aparece em `list_anexos`. O cliente também passou a decodificar a saída do Windows em cp850 ("não" saía como "n\uFFFDo"). | Varredura completa das 57 ferramentas na JPPC (31/10), chamando cada uma de verdade. |
 | 3.52.0 | `analisar_imagem` baixava a imagem sem user-agent (sites exigentes, como o Wikimedia, devolviam 400) e aceitava endereço interno (dava para pedir `127.0.0.1:8001`, o embedder). Agora usa o mesmo UA de navegador do `web_open` e passa pela mesma trava de endereço interno, inclusive a cada salto de redirecionamento. | Teste de todas as 57 ferramentas (30/10), chamando cada uma de verdade. |
 
 ---

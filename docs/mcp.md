@@ -154,6 +154,14 @@ conter `__`). A chave de acesso fica guardada no servidor e volta mascarada (`�
 - **A ferramenta `chat` fica fora da lista injetada no próprio chat** (evita o modelo chamar a si
   mesmo); pelo MCP ela continua disponível.
 - **Timeouts** contam no cliente: `upload_file` e `ingest` de arquivo grande podem passar de 30 s.
+- **`ingest_status` exige `job_id`**: sem ele (ou com valor não inteiro) responde `422` pedindo o id;
+  o id sai de `ingest`/`upload_file`/`edit_doc` ou de `list_jobs`.
+- **`upload_file` devolve `anexo_id`** além de `doc_id`/`job_id`: o mesmo arquivo entra no RAG e no canal de
+  anexos, então dá para encadear direto com `enviar_para_maquina` (sem passar por `list_anexos`).
+- **`edit_doc` sem `title` herda o título atual** — a edição não apaga o título, e documento arquivado
+  continua arquivado depois de reindexar.
+- **Saída de comando no Windows**: o cliente decodifica cp850 quando os bytes não são UTF-8 válido, então
+  acentuação de `cmd.exe` chega legível.
 
 ---
 
