@@ -93,6 +93,7 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
   const [verbatim, setVerbatim] = useState("20");
   /* v3.56 — compactação com a mecânica do mini-compress (gatilho + tetos das partes A/B/C) */
   const [thresholdK, setThresholdK] = useState("200");
+  const [percentual, setPercentual] = useState("90");
   const [tailCap, setTailCap] = useState("80000");
   const [pairsCap, setPairsCap] = useState("40000");
   const [summaryCap, setSummaryCap] = useState("12000");
@@ -129,6 +130,7 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
       setMemoria(String(r.memoria_turnos ?? 12));
       setVerbatim(String(r.verbatim_turnos ?? 20));
       setThresholdK(String(r.comp?.thresholdK ?? 200));
+      setPercentual(String(r.comp?.percentualJanela ?? 90));
       setTailCap(String(r.comp?.tailCharsCap ?? 80000));
       setPairsCap(String(r.comp?.pairsBlockCap ?? 40000));
       setSummaryCap(String(r.comp?.summaryCharsCap ?? 12000));
@@ -167,6 +169,7 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
     setMemoria(String(p.memoria_turnos ?? 12));
     setVerbatim(String(p.verbatim_turnos ?? 20));
     setThresholdK(String(p.comp?.thresholdK ?? 200));
+    setPercentual(String(p.comp?.percentualJanela ?? 90));
     setTailCap(String(p.comp?.tailCharsCap ?? 80000));
     setPairsCap(String(p.comp?.pairsBlockCap ?? 40000));
     setSummaryCap(String(p.comp?.summaryCharsCap ?? 12000));
@@ -255,6 +258,7 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
         memoria_turnos: Number(memoria),
         verbatim_turnos: Number(verbatim),
         threshold_k: Number(thresholdK),
+        compactacao_percent: Number(percentual),
         tail_chars_cap: Number(tailCap),
         pairs_block_cap: Number(pairsCap),
         summary_chars_cap: Number(summaryCap),
@@ -476,6 +480,21 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
                 200 = 200k · 0 = nunca · vale o menor entre isto e 90% da janela do modelo (<span className="mono">threshold_k</span>)
               </span>
             </label>
+            <label className="rotulo m-0">
+              teto de segurança (% da janela)
+              <input
+                id="provPercentualJanela"
+                className="campo mt-1"
+                value={percentual}
+                disabled={!operador}
+                onChange={(e) => setPercentual(e.target.value)}
+              />
+              <span className="dica mt-1 block">
+                o gatilho é o MENOR entre o número ao lado e esta fatia da janela (1 a 100; padrão 90)
+              </span>
+            </label>
+          </div>
+          <div className="grade-2 !gap-3 mt-3">
             <label className="rotulo m-0">
               pares pedido → conclusão
               <input

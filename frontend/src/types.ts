@@ -227,6 +227,7 @@ export type ProviderResp = {
   max_rodadas: number;
   memoria_turnos: number;
   verbatim_turnos: number;
+  compactacao_percent?: number;
   /** v3.56 — compactação com a mecânica do mini-compress (é da conta) */
   comp?: {
     thresholdK: number;
@@ -235,6 +236,7 @@ export type ProviderResp = {
     pairsBlockCap: number;
     summaryCharsCap: number;
     maxPairs: number;
+    percentualJanela?: number;
   };
   reserva_tokens: number;
   /** v3.2: 0 = padrão do sistema; silencio_efetivo_s é o número que está valendo de fato */
