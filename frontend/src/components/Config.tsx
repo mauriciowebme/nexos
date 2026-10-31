@@ -90,7 +90,13 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
   const [prompt, setPrompt] = useState("");
   const [rodadas, setRodadas] = useState("5");
   const [memoria, setMemoria] = useState("12");
-  const [verbatim, setVerbatim] = useState("4");
+  const [verbatim, setVerbatim] = useState("20");
+  /* v3.56 — compactação com a mecânica do mini-compress (gatilho + tetos das partes A/B/C) */
+  const [thresholdK, setThresholdK] = useState("200");
+  const [tailCap, setTailCap] = useState("80000");
+  const [pairsCap, setPairsCap] = useState("40000");
+  const [summaryCap, setSummaryCap] = useState("12000");
+  const [maxPairs, setMaxPairs] = useState("8");
   const [reserva, setReserva] = useState("1024");
   /* v3.2: o tempo que o modelo pode ficar SEM ESCREVER nada antes de eu desistir (0 = padrão 180s).
      Não é limite de duração da resposta: resposta longa que não para de escrever tem todo o tempo. */
@@ -121,7 +127,12 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
       /* v3.55: comportamento do agente é da CONTA — o card abre preenchido mesmo com o form fechado */
       setRodadas(String(r.max_rodadas));
       setMemoria(String(r.memoria_turnos ?? 12));
-      setVerbatim(String(r.verbatim_turnos ?? 4));
+      setVerbatim(String(r.verbatim_turnos ?? 20));
+      setThresholdK(String(r.comp?.thresholdK ?? 200));
+      setTailCap(String(r.comp?.tailCharsCap ?? 80000));
+      setPairsCap(String(r.comp?.pairsBlockCap ?? 40000));
+      setSummaryCap(String(r.comp?.summaryCharsCap ?? 12000));
+      setMaxPairs(String(r.comp?.maxPairs ?? 8));
       /* se o form do padrão estiver aberto, sincroniza com o que voltou do servidor */
       if (formPadraoAberto) {
         setTipo(r.tipo === "ollama" ? "ollama" : "openai");
@@ -154,7 +165,12 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
     setPrompt(p.system_prompt ?? "");
     setRodadas(String(p.max_rodadas));
     setMemoria(String(p.memoria_turnos ?? 12));
-    setVerbatim(String(p.verbatim_turnos ?? 4));
+    setVerbatim(String(p.verbatim_turnos ?? 20));
+    setThresholdK(String(p.comp?.thresholdK ?? 200));
+    setTailCap(String(p.comp?.tailCharsCap ?? 80000));
+    setPairsCap(String(p.comp?.pairsBlockCap ?? 40000));
+    setSummaryCap(String(p.comp?.summaryCharsCap ?? 12000));
+    setMaxPairs(String(p.comp?.maxPairs ?? 8));
     setReserva(String(p.reserva_tokens ?? 1024));
     setSilencio(String(p.silencio_s ?? 0));
     setContexto(String(p.contexto_tokens ?? 0));
@@ -232,11 +248,17 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
         max_rodadas: number;
         memoria_turnos: number;
         verbatim_turnos: number;
+        comp?: ProviderResp["comp"];
       }>("/config/instrucoes", {
         texto,
         max_rodadas: Number(rodadas),
         memoria_turnos: Number(memoria),
         verbatim_turnos: Number(verbatim),
+        threshold_k: Number(thresholdK),
+        tail_chars_cap: Number(tailCap),
+        pairs_block_cap: Number(pairsCap),
+        summary_chars_cap: Number(summaryCap),
+        max_pairs: Number(maxPairs),
         ...(operador && tenant ? { tenant } : {}),
       });
       setP((atual) =>
@@ -248,6 +270,7 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
               max_rodadas: r.max_rodadas,
               memoria_turnos: r.memoria_turnos,
               verbatim_turnos: r.verbatim_turnos,
+              ...(r.comp ? { comp: r.comp } : {}),
             }
           : atual,
       );
@@ -425,8 +448,83 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
               disabled={!operador}
               onChange={(e) => setVerbatim(e.target.value)}
             />
-            <span className="dica mt-1 block">o resto vira uma linha curta (regra, sem custo; nada é resumido por IA)</span>
+            <span className="dica mt-1 block">
+              as últimas N vão verbatim para o modelo (0 a 50; padrão 20) — é o <span className="mono">protect_last_n</span>
+            </span>
           </label>
+        </div>
+
+        {/* v3.56 — compactação com a MESMA mecânica do mini-compress do Hermes:
+            gatilho por tamanho + cascata C (verbatim) / B (pares) / A (resumo). */}
+        <div className="mt-4 rounded-[8px] border border-borda p-3" id="cardCompactacao">
+          <div className="rotulo m-0">compactação de contexto</div>
+          <span className="sub2 block font-normal">
+            igual à do Hermes: <b>só age quando o gatilho é atingido</b> — abaixo dele, o histórico vai inteiro.
+            Acima, cascata C → B → A (verbatim → pares → resumo), nada se perde.
+          </span>
+          <div className="grade-2 !gap-3 mt-3">
+            <label className="rotulo m-0">
+              gatilho (milhares de tokens)
+              <input
+                id="provThresholdK"
+                className="campo mt-1"
+                value={thresholdK}
+                disabled={!operador}
+                onChange={(e) => setThresholdK(e.target.value)}
+              />
+              <span className="dica mt-1 block">
+                200 = 200k · 0 = nunca · vale o menor entre isto e 90% da janela do modelo (<span className="mono">threshold_k</span>)
+              </span>
+            </label>
+            <label className="rotulo m-0">
+              pares pedido → conclusão
+              <input
+                id="provMaxPairs"
+                className="campo mt-1"
+                value={maxPairs}
+                disabled={!operador}
+                onChange={(e) => setMaxPairs(e.target.value)}
+              />
+              <span className="dica mt-1 block">quantos pares íntegros ficam no bloco B (0 a 20; padrão 8)</span>
+            </label>
+          </div>
+          <div className="grade-2 !gap-3 mt-3">
+            <label className="rotulo m-0">
+              teto da cauda verbatim (caracteres)
+              <input
+                id="provTailCap"
+                className="campo mt-1"
+                value={tailCap}
+                disabled={!operador}
+                onChange={(e) => setTailCap(e.target.value)}
+              />
+              <span className="dica mt-1 block">parte C · 80000 = 20K tokens (<span className="mono">tail_chars_cap</span>)</span>
+            </label>
+            <label className="rotulo m-0">
+              teto dos pares (caracteres)
+              <input
+                id="provPairsCap"
+                className="campo mt-1"
+                value={pairsCap}
+                disabled={!operador}
+                onChange={(e) => setPairsCap(e.target.value)}
+              />
+              <span className="dica mt-1 block">parte B · 40000 = 10K tokens (<span className="mono">pairs_block_cap</span>)</span>
+            </label>
+          </div>
+          <div className="grade-2 !gap-3 mt-3">
+            <label className="rotulo m-0">
+              teto do resumo (caracteres)
+              <input
+                id="provSummaryCap"
+                className="campo mt-1"
+                value={summaryCap}
+                disabled={!operador}
+                onChange={(e) => setSummaryCap(e.target.value)}
+              />
+              <span className="dica mt-1 block">parte A · 12000 = 3K tokens (<span className="mono">summary_chars_cap</span>)</span>
+            </label>
+          </div>
         </div>
         {operador ? (
           <div className="mt-2 flex flex-wrap gap-2">
