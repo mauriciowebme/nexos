@@ -39,6 +39,7 @@ export const RESERVA_PADRAO = 1024; // tokens livres para a resposta
 export const JANELA_PADRAO = 8192; // usada quando nem o painel nem a detecção informaram
 /* v3.56 — opções da compactação, iguais às do mini-compress do Hermes (context.engine_options) */
 export const THRESHOLD_K_PADRAO = 200; // milhares de tokens (200 = 200k; 0 = nunca)
+export const COMPACTACAO_PERCENT_PADRAO = 90; // fatia da janela que serve de teto (1 a 100)
 export const TAIL_CHARS_CAP_PADRAO = 80_000; // parte C (20K tokens)
 export const PAIRS_BLOCK_CAP_PADRAO = 40_000; // parte B (10K tokens)
 export const SUMMARY_CHARS_CAP_PADRAO = 12_000; // parte A (3K tokens)
@@ -65,6 +66,7 @@ type Linha = {
   verbatim_turnos: number | null;
   /* v3.56 — opções da compactação (mesmas chaves do mini-compress) */
   threshold_k: number | null;
+  compactacao_percent: number | null;
   tail_chars_cap: number | null;
   pairs_block_cap: number | null;
   summary_chars_cap: number | null;
@@ -135,6 +137,7 @@ export async function initProvider(): Promise<void> {
   /* v3.56 — compactação com a mecânica do mini-compress: gatilho + tetos por parte (A/B/C).
      São da CONTA (como o system prompt), não do provider: valem para qualquer modelo escolhido. */
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS threshold_k INT NOT NULL DEFAULT ${THRESHOLD_K_PADRAO}`);
+  await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS compactacao_percent INT NOT NULL DEFAULT ${COMPACTACAO_PERCENT_PADRAO}`);
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS tail_chars_cap INT NOT NULL DEFAULT ${TAIL_CHARS_CAP_PADRAO}`);
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS pairs_block_cap INT NOT NULL DEFAULT ${PAIRS_BLOCK_CAP_PADRAO}`);
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS summary_chars_cap INT NOT NULL DEFAULT ${SUMMARY_CHARS_CAP_PADRAO}`);
@@ -319,6 +322,7 @@ export function opcoesDaLinha(l: Linha | null | undefined): Opcoes {
     pairsBlockCap: n(l.pairs_block_cap, OPCOES_PADRAO.pairsBlockCap),
     summaryCharsCap: n(l.summary_chars_cap, OPCOES_PADRAO.summaryCharsCap),
     maxPairs: n(l.max_pairs, OPCOES_PADRAO.maxPairs),
+    percentualJanela: n(l.compactacao_percent, OPCOES_PADRAO.percentualJanela ?? 90),
   };
 }
 
@@ -346,6 +350,7 @@ export async function salvarInstrucoes(
     pairs_block_cap?: unknown;
     summary_chars_cap?: unknown;
     max_pairs?: unknown;
+    compactacao_percent?: unknown;
   },
 ): Promise<{
   escopo: string;
@@ -355,6 +360,7 @@ export async function salvarInstrucoes(
   max_rodadas: number;
   memoria_turnos: number;
   verbatim_turnos: number;
+  compactacao_percent: number;
   comp: Opcoes;
 }> {
   const escopo = tenantFor(user, typeof body.tenant === "string" ? body.tenant : null);
@@ -385,16 +391,24 @@ export async function salvarInstrucoes(
   const pairsBlockCap = inteiro(body.pairs_block_cap, anterior?.pairs_block_cap ?? PAIRS_BLOCK_CAP_PADRAO, "pairs_block_cap", 2000, 200000);
   const summaryCharsCap = inteiro(body.summary_chars_cap, anterior?.summary_chars_cap ?? SUMMARY_CHARS_CAP_PADRAO, "summary_chars_cap", 2000, 100000);
   const maxPairs = inteiro(body.max_pairs, anterior?.max_pairs ?? MAX_PAIRS_PADRAO, "max_pairs", 0, 20);
+  /* v3.57 — a fatia da janela deixou de ser fixa em 90%: a conta escolhe (1 a 100) */
+  const compactacaoPercent = inteiro(
+    body.compactacao_percent,
+    anterior?.compactacao_percent ?? COMPACTACAO_PERCENT_PADRAO,
+    "compactacao_percent",
+    1,
+    100,
+  );
   await q(
     `INSERT INTO provider_config (escopo, base_url, modelo, system_prompt, max_rodadas, memoria_turnos, verbatim_turnos,
-       threshold_k, tail_chars_cap, pairs_block_cap, summary_chars_cap, max_pairs)
-     VALUES ($1, '', '', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       threshold_k, tail_chars_cap, pairs_block_cap, summary_chars_cap, max_pairs, compactacao_percent)
+     VALUES ($1, '', '', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT (escopo) DO UPDATE SET system_prompt = EXCLUDED.system_prompt, max_rodadas = EXCLUDED.max_rodadas,
        memoria_turnos = EXCLUDED.memoria_turnos, verbatim_turnos = EXCLUDED.verbatim_turnos,
        threshold_k = EXCLUDED.threshold_k, tail_chars_cap = EXCLUDED.tail_chars_cap,
        pairs_block_cap = EXCLUDED.pairs_block_cap, summary_chars_cap = EXCLUDED.summary_chars_cap,
-       max_pairs = EXCLUDED.max_pairs, atualizado_em = now()`,
-    [escopo, texto, maxRodadas, memoriaTurnos, verbatimTurnos, thresholdK, tailCharsCap, pairsBlockCap, summaryCharsCap, maxPairs],
+       max_pairs = EXCLUDED.max_pairs, compactacao_percent = EXCLUDED.compactacao_percent, atualizado_em = now()`,
+    [escopo, texto, maxRodadas, memoriaTurnos, verbatimTurnos, thresholdK, tailCharsCap, pairsBlockCap, summaryCharsCap, maxPairs, compactacaoPercent],
   );
   return {
     escopo,
@@ -404,6 +418,7 @@ export async function salvarInstrucoes(
     max_rodadas: maxRodadas,
     memoria_turnos: memoriaTurnos,
     verbatim_turnos: verbatimTurnos,
+    compactacao_percent: compactacaoPercent,
     comp: {
       thresholdK,
       protectLastN: verbatimTurnos,
@@ -411,6 +426,7 @@ export async function salvarInstrucoes(
       pairsBlockCap,
       summaryCharsCap,
       maxPairs,
+      percentualJanela: compactacaoPercent,
     },
   };
 }
@@ -1068,7 +1084,7 @@ export async function responderChat(
   const compactacao = {
     memoria_turnos: cfg.memoria_turnos,
     historico_lido: historico.length,
-    /* v3.56: a compactação só age no gatilho (min(threshold_k, 90% da janela)) */
+    /* v3.56/v3.57: a compactação só age no gatilho (menor entre threshold_k e a fatia da janela) */
     compactou: plano.compactou,
     gatilho: plano.gatilho,
     resumidas: plano.resumidas,

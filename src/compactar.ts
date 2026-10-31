@@ -28,7 +28,7 @@
  */
 
 export const CHARS_POR_TOKEN = 4;
-/** rede de segurança do gatilho: compactar também a 90% da janela do modelo */
+/** rede de segurança do gatilho: compactar também a uma fatia da janela (padrão 90%, configurável) */
 export const SAFETY_CONTEXT_PERCENT = 0.9;
 
 /** estimativa de tokens de um texto (sem tokenizador: 4 caracteres por token) */
@@ -74,6 +74,8 @@ export type Opcoes = {
   summaryCharsCap: number;
   /** quantos pares pedido->conclusão no bloco B */
   maxPairs: number;
+  /** % da janela do modelo que serve de teto de segurança (1 a 100; padrão 90) */
+  percentualJanela?: number;
 };
 
 export const OPCOES_PADRAO: Opcoes = {
@@ -83,6 +85,7 @@ export const OPCOES_PADRAO: Opcoes = {
   pairsBlockCap: 40_000,
   summaryCharsCap: 12_000,
   maxPairs: 8,
+  percentualJanela: 90,
 };
 
 export type PedidoDeOrcamento = {
@@ -106,7 +109,7 @@ export type Plano = {
   mensagens: MsgChat[];
   /** a compactação agiu neste turno? (abaixo do gatilho = false, histórico inteiro) */
   compactou: boolean;
-  /** gatilho efetivo em tokens (min(threshold_k, 90% da janela)) */
+  /** gatilho efetivo em tokens (menor entre threshold_k e a fatia configurada da janela) */
   gatilho: number;
   /** tokens estimados do payload final */
   tokens: number;
@@ -289,11 +292,14 @@ export function construirAviso(): MsgChat {
   };
 }
 
-/** Gatilho efetivo: o que vier primeiro entre o absoluto (k*1000) e 90% da janela. */
+/** Gatilho efetivo: o que vier primeiro entre o absoluto (k*1000) e N% da janela
+ *  (N configurável na conta; padrão igual ao do mini-compress: 90%). */
 export function gatilhoEmTokens(opcoes: Opcoes, janela: number): number {
   const cands: number[] = [];
   if (opcoes.thresholdK > 0) cands.push(Math.round(opcoes.thresholdK * 1000));
-  if (janela > 0) cands.push(Math.floor(janela * SAFETY_CONTEXT_PERCENT));
+  const pct = Number(opcoes.percentualJanela ?? SAFETY_CONTEXT_PERCENT * 100);
+  const fracao = Number.isFinite(pct) && pct > 0 && pct <= 100 ? pct / 100 : SAFETY_CONTEXT_PERCENT;
+  if (janela > 0) cands.push(Math.floor(janela * fracao));
   return cands.length ? Math.min(...cands) : 0;
 }
 
