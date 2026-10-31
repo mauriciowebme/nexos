@@ -1870,28 +1870,35 @@ test("nexos v2 — suíte completa", async (t) => {
         pairs_block_cap: 30000,
         summary_chars_cap: 9000,
         max_pairs: 6,
+        compactacao_percent: 80,
       },
     });
     f.check(
       "opções da compactação salvam pela rota das instruções",
       r.status === 200 && r.json?.comp?.thresholdK === 120 && r.json?.comp?.tailCharsCap === 60000 &&
-        r.json?.comp?.pairsBlockCap === 30000 && r.json?.comp?.summaryCharsCap === 9000 && r.json?.comp?.maxPairs === 6,
+        r.json?.comp?.pairsBlockCap === 30000 && r.json?.comp?.summaryCharsCap === 9000 && r.json?.comp?.maxPairs === 6 &&
+        r.json?.comp?.percentualJanela === 80,
       r.json?.comp,
     );
     r = await call("GET", "/config/provider", { key: OPKEY });
     f.check(
       "o GET devolve as opções da compactação (a tela abre preenchida)",
-      r.json?.comp?.thresholdK === 120 && r.json?.comp?.maxPairs === 6,
+      r.json?.comp?.thresholdK === 120 && r.json?.comp?.maxPairs === 6 && r.json?.comp?.percentualJanela === 80,
       r.json?.comp,
     );
     r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tail_chars_cap: 100 } });
     f.check("teto abaixo do mínimo recusado com 422", r.status === 422 && String(r.texto).includes("tail_chars_cap"), r.texto.slice(0, 120));
     r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { max_pairs: 99 } });
     f.check("max_pairs acima do teto recusado com 422", r.status === 422 && String(r.texto).includes("max_pairs"), r.texto.slice(0, 120));
+    /* v3.57 — a fatia da janela é da conta: 300 é absurdo, 0 desligaria a regra */
+    r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { compactacao_percent: 300 } });
+    f.check("percentual da janela acima de 100 recusado com 422", r.status === 422 && String(r.texto).includes("compactacao_percent"), r.texto.slice(0, 120));
+    r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { compactacao_percent: 0 } });
+    f.check("percentual da janela zero recusado com 422", r.status === 422, r.texto.slice(0, 120));
     /* volta aos padrões do mini-compress para o resto do bloco não herdar os valores do teste */
     await call("PUT", "/config/instrucoes", {
       key: OPKEY,
-      corpo: { texto: "PROMPT-DE-INSTRUCAO", threshold_k: 200, tail_chars_cap: 80000, pairs_block_cap: 40000, summary_chars_cap: 12000, max_pairs: 8 },
+      corpo: { texto: "PROMPT-DE-INSTRUCAO", threshold_k: 200, tail_chars_cap: 80000, pairs_block_cap: 40000, summary_chars_cap: 12000, max_pairs: 8, compactacao_percent: 90 },
     });
 
     /* ---------------------------------------------- 2. memória: o payload que chega ao modelo */
@@ -1921,6 +1928,11 @@ test("nexos v2 — suíte completa", async (t) => {
     /* v3.56 — o gatilho é a regra: conversa pequena com janela de 4000 fica MUITO abaixo
        de min(threshold_k, 90% da janela) = 3600 tokens, então NADA é resumido. */
     f.check("abaixo do gatilho nada é compactado (histórico inteiro no payload)", r.json?.compactacao?.compactou === false && r.json.compactacao.resumidas === 0 && r.json.compactacao.pares === 0 && r.json.compactacao.gatilho === 3600, r.json?.compactacao);
+    /* v3.57 — o percentual da janela é configurável: 50% de 4000 = 2000 tokens de gatilho */
+    await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { compactacao_percent: 50 } });
+    r = await call("POST", "/chat", { key: OPKEY, corpo: { pergunta: "terceira com metade da janela", memoria: GAV } });
+    f.check("o percentual configurado muda o gatilho (50% de 4000 = 2000)", r.json?.compactacao?.gatilho === 2000, r.json?.compactacao);
+    await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { compactacao_percent: 90 } });
 
     /* ---------------------------------------------- 3. compactação determinística (sem LLM) */
     /* enchimento: o gatilho é por TAMANHO — com janela de 300 o limiar é 270 tokens, então
