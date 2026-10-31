@@ -118,15 +118,16 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
          clique anterior. Antes, o estado do campo só nascia dentro do form do provider — com o
          campo fora dali (v3.35), a tela abria vazia mesmo com texto gravado. */
       setPrompt(r.system_prompt ?? "");
+      /* v3.55: comportamento do agente é da CONTA — o card abre preenchido mesmo com o form fechado */
+      setRodadas(String(r.max_rodadas));
+      setMemoria(String(r.memoria_turnos ?? 12));
+      setVerbatim(String(r.verbatim_turnos ?? 4));
       /* se o form do padrão estiver aberto, sincroniza com o que voltou do servidor */
       if (formPadraoAberto) {
         setTipo(r.tipo === "ollama" ? "ollama" : "openai");
         setBaseUrl(r.base_url);
         setModelo(r.modelo);
         setTemperatura(String(r.temperatura));
-        setRodadas(String(r.max_rodadas));
-        setMemoria(String(r.memoria_turnos ?? 12));
-        setVerbatim(String(r.verbatim_turnos ?? 4));
         setReserva(String(r.reserva_tokens ?? 1024));
         setSilencio(String(r.silencio_s ?? 0));
         setContexto(String(r.contexto_tokens ?? 0));
@@ -170,9 +171,8 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
       base_url: baseUrl,
       modelo,
       temperatura: Number(temperatura),
-      max_rodadas: Number(rodadas),
-      memoria_turnos: Number(memoria),
-      verbatim_turnos: Number(verbatim),
+      /* v3.55: max_rodadas, memoria_turnos e verbatim_turnos saíram daqui — são da conta e vão
+         pelo PUT /config/instrucoes. O backend preserva o valor anterior quando o campo não vem. */
       reserva_tokens: Number(reserva),
       silencio_s: Number(silencio),
       contexto_tokens: Number(contexto),
@@ -221,16 +221,37 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
     }
   }
 
-  /** v3.35 — as instruções são da conta: salvam sozinhas, sem tocar no provider */
+  /** v3.35 — as instruções são da conta: salvam sozinhas, sem tocar no provider.
+   *  v3.55 — rodadas, memória e intactas viajam no mesmo save (são da conta também). */
   async function salvarInstrucoes(texto: string) {
     setOcupado(true);
     try {
-      const r = await put<{ system_prompt: string; tem_system_prompt: boolean }>("/config/instrucoes", {
+      const r = await put<{
+        system_prompt: string;
+        tem_system_prompt: boolean;
+        max_rodadas: number;
+        memoria_turnos: number;
+        verbatim_turnos: number;
+      }>("/config/instrucoes", {
         texto,
+        max_rodadas: Number(rodadas),
+        memoria_turnos: Number(memoria),
+        verbatim_turnos: Number(verbatim),
         ...(operador && tenant ? { tenant } : {}),
       });
-      setP((atual) => (atual ? { ...atual, system_prompt: r.system_prompt, tem_system_prompt: r.tem_system_prompt } : atual));
-      toast("instruções salvas", "sucesso");
+      setP((atual) =>
+        atual
+          ? {
+              ...atual,
+              system_prompt: r.system_prompt,
+              tem_system_prompt: r.tem_system_prompt,
+              max_rodadas: r.max_rodadas,
+              memoria_turnos: r.memoria_turnos,
+              verbatim_turnos: r.verbatim_turnos,
+            }
+          : atual,
+      );
+      toast("instruções e comportamento salvos", "sucesso");
       await carregar();
     } catch (e) {
       toast("salvar instruções: " + (e as Error).message, "erro");
@@ -351,7 +372,7 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
       {/* v3.35 — a instrução é da CONTA, não do modelo: fica FORA do formulário do provider
           justamente porque vale para todos eles (antes morava dentro de cada um). */}
       <div className="mt-3 rounded-[10px] border border-borda p-3" id="cardInstrucoes">
-        <div className="rotulo m-0">instruções do modelo (system prompt)</div>
+        <div className="rotulo m-0">instruções e comportamento do modelo</div>
         <span className="sub2 block font-normal">
           valem para <b>todos</b> os providers e modelos desta conta — é exatamente o que o modelo recebe
         </span>
@@ -368,10 +389,49 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
           {`${prompt.length} caracteres`}
           {p?.tem_system_prompt ? " · em uso" : " · vazio = conversa pura"}
         </span>
+        {/* v3.55: rodadas, memória e intactas são da CONTA (como as instruções) — saíram do
+            formulário do provider, que passou a falar só do serviço e do modelo. */}
+        <div className="grade-2 !gap-3 mt-3">
+          <label className="rotulo m-0">
+            rodadas do agente (loop de ferramentas; ao bater o teto ele para e avisa)
+            <input
+              id="provRodadas"
+              className="campo mt-1"
+              value={rodadas}
+              disabled={!operador}
+              onChange={(e) => setRodadas(e.target.value)}
+            />
+            <span className="dica mt-1 block">0 = nunca chamar ferramenta (0 a 60; padrão 5)</span>
+          </label>
+          <label className="rotulo m-0">
+            memória da conversa (mensagens)
+            <input
+              id="provMemoria"
+              className="campo mt-1"
+              value={memoria}
+              disabled={!operador}
+              onChange={(e) => setMemoria(e.target.value)}
+            />
+            <span className="dica mt-1 block">quantas mensagens antigas desta gaveta voltam ao modelo · 0 = sem memória</span>
+          </label>
+        </div>
+        <div className="grade-2 !gap-3 mt-3">
+          <label className="rotulo m-0">
+            últimas intactas na compactação
+            <input
+              id="provVerbatim"
+              className="campo mt-1"
+              value={verbatim}
+              disabled={!operador}
+              onChange={(e) => setVerbatim(e.target.value)}
+            />
+            <span className="dica mt-1 block">o resto vira uma linha curta (regra, sem custo; nada é resumido por IA)</span>
+          </label>
+        </div>
         {operador ? (
           <div className="mt-2 flex flex-wrap gap-2">
             <button type="button" className="btn btn-mini" id="provPromptSalvar" onClick={() => void salvarInstrucoes(prompt)} disabled={ocupado}>
-              {ocupado ? "salvando…" : "salvar instruções"}
+              {ocupado ? "salvando…" : "salvar"}
             </button>
             {p?.regras_padrao && prompt.trim() !== p.regras_padrao.trim() ? (
               <button
@@ -530,28 +590,12 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
             <span className="dica mt-1 block">guardada no servidor; a tela só vê os 4 últimos caracteres</span>
           </label>
           {/* v3.35: as instruções do modelo saíram daqui — são da CONTA, não deste provider.
-              O campo único vive no card "instruções do modelo", acima da tabela. */}
+              v3.55: rodadas, memória e últimas intactas também saíram (vivem no card do topo,
+              junto das instruções); aqui fica só o que é do serviço e do modelo. */}
           <div className="grade-2 !gap-3">
             <label className="rotulo m-0">
               temperatura
               <input className="campo mt-1" value={temperatura} onChange={(e) => setTemperatura(e.target.value)} />
-            </label>
-            <label className="rotulo m-0">
-              rodadas do agente (loop de ferramentas; ao bater o teto ele para e avisa)
-              <input id="provRodadas" className="campo mt-1" value={rodadas} onChange={(e) => setRodadas(e.target.value)} />
-              <span className="dica mt-1 block">0 = nunca chamar ferramenta (0 a 60; padrão 5)</span>
-            </label>
-          </div>
-          <div className="grade-2 !gap-3">
-            <label className="rotulo m-0">
-              memória da conversa (mensagens)
-              <input id="provMemoria" className="campo mt-1" value={memoria} onChange={(e) => setMemoria(e.target.value)} />
-              <span className="dica mt-1 block">quantas mensagens antigas desta gaveta voltam ao modelo · 0 = sem memória</span>
-            </label>
-            <label className="rotulo m-0">
-              últimas intactas na compactação
-              <input id="provVerbatim" className="campo mt-1" value={verbatim} onChange={(e) => setVerbatim(e.target.value)} />
-              <span className="dica mt-1 block">o resto vira uma linha curta (regra, sem custo; nada é resumido por IA)</span>
             </label>
           </div>
           <div className="grade-3 !gap-3">
