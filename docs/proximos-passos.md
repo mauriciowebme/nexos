@@ -1,6 +1,6 @@
 # Próximos passos — Nexos
 
-> **Última atualização:** 2026-10-31 · **Versão:** 3.62.0 · **Dono:** Mauricio
+> **Última atualização:** 2026-10-31 · **Versão:** 3.63.0 · **Dono:** Mauricio
 
 Este arquivo tem **só o que está em aberto** — as tarefas entregues foram removidas na limpeza de
 30/10 (o histórico fica no `git log`). Execução de qualquer T### exige OK explícito do Mauricio.
@@ -10,12 +10,14 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 | T### | Nome | Módulo | Prioridade | Status | Link |
 |---|---|---|---|---|---|
 | T052 | Sandbox Python com as ferramentas do nexos + biblioteca + agenda | sandbox + ferramentas | 🟠 Alta | 🟢 Etapas 1 e 2 na v3.51.0 (falta a agenda) | [#t052](#t052) |
-| T053 | Sandbox: isolamento por conta, rede pelo proxy e cota | sandbox | 🟠 Alta | 🟢 Camadas 1–3 na v3.53.0; falta a tela de bibliotecas | [#t053](#t053) |
+| T053 | Sandbox: isolamento por conta, rede pelo proxy e cota | sandbox | 🟠 Alta | 🟢 Camadas 1–5 (v3.53.0 e v3.63.0); falta a tela de bibliotecas | [#t053](#t053) |
 
 ## Correções já no ar
 
 | Versão | O que corrigiu | Como foi achado |
 |---|---|---|
+| 3.63.0 | A ferramenta de Python do nexos quebrava nas bibliotecas de dados: `numpy`, `pandas` e `openpyxl` morriam na importação com `PermissionError: ctypes bloqueado no sandbox` (o numpy usa `ctypes` para carregar a parte nativa). O bloqueio saiu do Python e foi para o kernel: **Landlock** limita o disco à pasta da conta (escrita só nas pastas do usuário e no diretório do script; leitura do sistema) e **seccomp** recusa exec, ptrace e troca de namespace. Medido: numpy 2.5.4, pandas 3.1.0 e openpyxl 3.1.5 rodando; escrita fora da pasta e leitura de `/root` barradas; `web_search` pelo proxy intacto. | Dono: "a ferramenta de Python acho que não funciona corretamente". |
+
 | 3.62.0 | Durante a resposta, o botão do rodapé era sempre o **parar**: quem digitava no meio do rastro e tocava nele matava o turno com a mensagem ainda no campo (o Enter funcionava, o toque não). Agora o botão obedece ao campo: **com texto digitado ele envia** — a fala entra no meio do rastro e o turno continua — e **com o campo vazio ele é o parar**, como antes. Medido em 390px: com texto o botão vira a seta (título "mandar agora, no meio da resposta") e o toque fez a fala entrar no rastro sem parar a resposta; ao enviar, o campo esvazia e o botão volta ao quadrado. | Dono: "não consigo mais mandar mensagem no meio de um rastro de turno". |
 
 | 3.61.0 | O rodapé do chat no celular vivia apertado: as ferramentas (⚙) e a nova conversa disputavam a mesma linha da caixa de escrever, e o campo sobrava com 96px — o texto de exemplo caía em 4 linhas. Agora os dois botões moram no **topo**, ao lado do menu (que continua só no celular), e a nova conversa ganhou ícone de balão com "+". O rodapé ficou só com a caixa: escrever, anexar, ditar e enviar. Medido em 390px: campo 96 → 202px, texto de 4 → 2 linhas e rodapé 134 → 91px, sobrando tela para a conversa; no computador a barra de cima aparece com ⚙ e nova conversa à direita e o ☰ fica escondido. O painel de ferramentas passou a abrir para baixo. | Pedido do dono: "tá tudo em prensado… acho que podemos mover esse ferramentas e nova conversa pro topo". |
@@ -64,7 +66,8 @@ de verdade continua sendo o container — o confinamento por processo fica na et
 | **Módulo** | sandbox |
 | **Pedido** | "o mais liberdade possível com o mais seguro possível sem vazamentos" |
 | **Entregue na v3.53.0** | (1) o script roda como **uid próprio por conta** (20000–29999, nunca root) e a pasta da conta é 700 — outra conta recebe "permissão negada"; (2) a internet passa **só pelo proxy local** (`HTTP_PROXY`/`HTTPS_PROXY`), que recusa qualquer destino interno e registra o que passou e o que foi negado; (3) **teto de memória** por `ulimit -v` (512 MB, `NEXOS_SANDBOX_MEM_MB`); (4) o retorno traz `rede` com os destinos. |
-| **Limite conhecido** | o bloqueio de socket é no Python (`sitecustomize`); um script que chame `subprocess` com `curl`, ou `ctypes`, ainda alcança a rede. Fechar isso exige barreira de SO (namespace de rede ou regra por uid), e o container atual não tem `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` — medido: `bwrap` e `unshare -U` respondem "Operation not permitted". Alternativa: serviço executor separado com rede própria (custo: um serviço a mais). |
+| **Entregue na v3.63.0** | (5) o cadeado do `ctypes` saiu do Python e foi para o **kernel**: **Landlock** limita o disco (leitura no sistema, **escrita só nas pastas da conta** e no diretório do script) e **seccomp** recusa `execve`, `ptrace`, `unshare`, `setns`, `mount` — com isso **numpy, pandas e openpyxl voltam a importar** (antes morriam em `PermissionError: ctypes bloqueado`). Medido no ambiente de teste: numpy 2.5.4, pandas 3.1.0 e openpyxl 3.1.5 rodando; escrita fora da pasta e leitura de `/root` barradas pelo kernel; `web_search` pelo proxy continua funcionando. |
+| **Limite conhecido** | a **rede** ainda é orientada pelo gancho do Python (`sitecustomize`), não pelo kernel: um script que use `ctypes` para chamar `connect` por biblioteca nativa pode alcançar a rede direta (o seccomp não distingue destino, porque o argumento de `connect` é ponteiro). O **disco** e o **processo** agora são barreira de SO. Fechar a rede exige namespace ou regra por uid, e o container não tem `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` — medido: `bwrap` ausente e `unshare -U` responde "Operation not permitted". Alternativa: serviço executor separado com rede própria. |
 | **Falta** | tela do que está instalado por conta, com botão de apagar; `pip` livre com registro; agenda da T052. |
 
 ## Ideias ainda não numeradas
