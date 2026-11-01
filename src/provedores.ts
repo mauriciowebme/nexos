@@ -23,10 +23,25 @@ export type ProvedorPub = {
   chave_mascarada: string;
   ativo: boolean;
   padrao: boolean;
+  /** v3.60: público = todo mundo vê; privado (false) = só o dono do escopo vê */
+  publico: boolean;
   escopo: string;
   modelos: string[];
   modelos_em: string | null;
 };
+
+/* v3.60 — um provedor pertence ao escopo em que nasceu: `*` (do operador, global) ou o
+ * tenant. "Publico" decide se os outros veem. Regra pedida pelo dono:
+ *   - público: todo mundo vê (qualquer conta);
+ *   - privado: só quem é do escopo dono vê; o operador vê tudo;
+ *   - nenhum provedor visível => sem chat (não existe mais "padrão da casa" escondido). */
+export function podeVerProvedor(user: Usuario, l: Record<string, any>): boolean {
+  if (user.operador) return true;
+  if (Boolean(l.publico)) return true;
+  /* privado: só a conta dona do escopo. Escopo global (`*`) é a conta do operador — privado ali
+     é do operador e de mais ninguém (antes disto, `*` vazava como "público" sem o dono marcar). */
+  return user.tenant !== GLOBAL && String(l.escopo) === user.tenant;
+}
 
 export async function initProvedores(): Promise<void> {
   await q(
@@ -57,6 +72,29 @@ export async function initProvedores(): Promise<void> {
   await q(`ALTER TABLE provedores ADD COLUMN IF NOT EXISTS contexto_tokens INT`);
   await q(`ALTER TABLE provedores ADD COLUMN IF NOT EXISTS contexto_detectado INT`);
   await q(`ALTER TABLE provedores ADD COLUMN IF NOT EXISTS silencio_s INT NOT NULL DEFAULT 0`);
+  /* v3.60 — visibilidade: público (todos) x privado (só o dono do escopo). */
+  await q(`ALTER TABLE provedores ADD COLUMN IF NOT EXISTS publico BOOLEAN NOT NULL DEFAULT true`);
+  /* migração única do "padrão da casa" (provider_config da conta do operador) para a lista,
+     para que o Clauricio apareça na tela como qualquer outro provedor. Idempotente: só entra
+     se a lista ainda não tem um provedor com a mesma URL e o mesmo modelo. */
+  for (const escopo of [GLOBAL, "admin"]) {
+    await q(
+      `INSERT INTO provedores (escopo, nome, tipo, base_url, chave, modelo, temperatura, system_prompt,
+          mcp_interno, max_rodadas, ativo, padrao, publico, memoria_turnos, verbatim_turnos, reserva_tokens,
+          contexto_tokens, silencio_s, modelos, atualizado_em)
+       SELECT p.escopo, upper(left(p.modelo, 1)) || substr(p.modelo, 2), p.tipo, p.base_url, p.chave, p.modelo,
+              p.temperatura, '', p.mcp_interno, p.max_rodadas, p.ativo, $2::boolean, $2::boolean,
+              p.memoria_turnos, p.verbatim_turnos, p.reserva_tokens, p.contexto_tokens, p.silencio_s, '[]'::jsonb, now()
+         FROM provider_config p
+        WHERE p.escopo = $1 AND p.base_url <> '' AND p.modelo <> ''
+          AND NOT EXISTS (SELECT 1 FROM provedores v
+                           WHERE v.escopo IN (p.escopo, '*') AND v.base_url = p.base_url AND v.modelo = p.modelo)
+          AND NOT EXISTS (SELECT 1 FROM provedores v
+                           WHERE v.escopo IN (p.escopo, '*') AND v.nome = upper(left(p.modelo, 1)) || substr(p.modelo, 2))
+       ON CONFLICT (escopo, nome) DO NOTHING`,
+      [escopo, escopo === GLOBAL],
+    );
+  }
   /* a tarefa em curso precisa lembrar qual provedor/modelo o usuário escolheu */
   await q(`ALTER TABLE chat_tarefas ADD COLUMN IF NOT EXISTS provedor TEXT NOT NULL DEFAULT ''`);
   await q(`ALTER TABLE chat_tarefas ADD COLUMN IF NOT EXISTS modelo TEXT NOT NULL DEFAULT ''`);
@@ -86,19 +124,25 @@ function paraPub(l: Linha): ProvedorPub {
     chave_mascarada: mascararChave(String(l.chave ?? "")),
     ativo: Boolean(l.ativo),
     padrao: Boolean(l.padrao),
+    publico: l.publico === undefined || l.publico === null ? true : Boolean(l.publico),
     escopo: String(l.escopo),
     modelos: Array.isArray(l.modelos) ? (l.modelos as string[]).map(String) : [],
     modelos_em: l.modelos_em ? new Date(l.modelos_em).toISOString() : null,
   };
 }
 
-/** O que o usuário pode ver: linhas do próprio escopo + global, chave mascarada. */
+/** O que o usuário pode ver: públicos + os do próprio escopo; chave sempre mascarada.
+ *  v3.60: a visibilidade é a regra do dono (público x privado), não o escopo sozinho. */
 export async function listarProvedores(user: Usuario, tenantArg?: string | null): Promise<ProvedorPub[]> {
   const escopo = tenantFor(user, tenantArg ?? null);
-  const r = await q<Linha>(`SELECT * FROM provedores WHERE escopo = ANY($1) ORDER BY padrao DESC, nome`, [
-    escopo === GLOBAL ? [GLOBAL] : [escopo, GLOBAL],
-  ]);
-  return r.rows.map(paraPub);
+  const r = await q<Linha>(`SELECT * FROM provedores ORDER BY padrao DESC, nome`);
+  return r.rows
+    .filter((l) => {
+      /* o operador olhando outro cliente vê o que aquele cliente vê (a tela mostra ?tenant=) */
+      const alvo: Usuario = user.operador && tenantArg ? { tenant: String(tenantArg), operador: false } : user;
+      return podeVerProvedor(alvo, l);
+    })
+    .map(paraPub);
 }
 
 type CorpoProvedor = {
@@ -114,6 +158,7 @@ type CorpoProvedor = {
   max_rodadas?: unknown;
   ativo?: unknown;
   padrao?: unknown;
+  publico?: unknown;
   tenant?: unknown;
 };
 
@@ -142,6 +187,9 @@ export async function salvarProvedor(user: Usuario, corpo: CorpoProvedor): Promi
   const chave =
     corpo.chave === undefined || corpo.chave === null || corpo.chave === "***" ? String(l?.chave ?? "") : String(corpo.chave);
   const padraoDesejado = corpo.padrao === undefined ? Boolean(l?.padrao) : Boolean(corpo.padrao);
+  /* v3.60 — público nasce marcado (padrão do dono: provedor novo já atende todos);
+     "privado" = só o dono do escopo vê. */
+  const publico = corpo.publico === undefined ? (l ? Boolean(l.publico) : true) : Boolean(corpo.publico);
   if (ativoDe(corpo, l) && !l && !modelo) {
     // o primeiro provedor ativo precisa de modelo (senão o chat não tem para quem falar)
     throw erro422("modelo é obrigatório");
@@ -149,11 +197,11 @@ export async function salvarProvedor(user: Usuario, corpo: CorpoProvedor): Promi
   void padraoDesejado; // aplicado adiante
 
   const r = await q<Linha>(
-    `INSERT INTO provedores (escopo, nome, tipo, base_url, chave, modelo, temperatura, system_prompt, mcp_interno, max_rodadas, ativo, padrao, atualizado_em)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+    `INSERT INTO provedores (escopo, nome, tipo, base_url, chave, modelo, temperatura, system_prompt, mcp_interno, max_rodadas, ativo, padrao, publico, atualizado_em)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())
      ON CONFLICT (escopo, nome) DO UPDATE SET
        tipo=$3, base_url=$4, chave=$5, modelo=$6, temperatura=$7, system_prompt=$8,
-       mcp_interno=$9, max_rodadas=$10, ativo=$11, padrao=$12, atualizado_em=now()
+       mcp_interno=$9, max_rodadas=$10, ativo=$11, padrao=$12, publico=$13, atualizado_em=now()
      RETURNING *`,
     [
       escopo,
@@ -168,6 +216,7 @@ export async function salvarProvedor(user: Usuario, corpo: CorpoProvedor): Promi
       maxRodadas,
       corpo.ativo === undefined ? true : Boolean(corpo.ativo),
       false, // "padrão" é um por escopo: movido por definirPadrao
+      publico,
     ],
   );
   if (corpo.padrao === true) await definirPadraoNoEscopo(escopo, Number(r.rows[0].id));
@@ -196,7 +245,10 @@ export async function definirPadrao(user: Usuario, id: number, tenantArg?: strin
   const l = r.rows[0];
   if (!l) throw erro409("provedor não encontrado");
   await definirPadraoNoEscopo(String(l.escopo), id);
-  return paraPub(l);
+  /* v3.60.1: a resposta devolve a linha RELIDA — `l` foi lida antes do update e voltava
+     com `padrao: false` (a tela mostrava o provedor recém-marcado como não-padrão). */
+  const atual = await q<Linha>(`SELECT * FROM provedores WHERE id = $1`, [id]);
+  return paraPub(atual.rows[0] ?? l);
 }
 
 export async function apagarProvedor(user: Usuario, id: number): Promise<{ ok: boolean }> {

@@ -17,6 +17,7 @@ import { erro409, erro422 } from "./errors";
 import { q } from "./db";
 import { apertarRodada, custoDoPayload, type MsgChat, montarPayload, OPCOES_PADRAO, type Opcoes } from "./compactar";
 import { abrirAnexo, type AnexoMeta } from "./anexos";
+import { podeVerProvedor } from "./provedores";
 import { MAX_TELAS_TURNO, htmlParcial, type Tela } from "./telas";
 import {
   type ChamadaFerramenta,
@@ -216,16 +217,16 @@ function cfgDeProvedorLinha(l: Record<string, any> | undefined): CfgResolvida | 
   };
 }
 
-/** Config efetiva (ordem): provedor escolhido na hora › nomeado padrão › linha própria › global.
- *  Uma tela salva pela metade (sem modelo) não tapa mais o padrão de todos — defeito achado
- *  em 20/10 e corrigido aqui. Desligar a própria linha completa continua valendo. */
+/** Config efetiva (v3.60): provedor escolhido na conversa › provedor PADRÃO que o usuário vê.
+ *  O "padrão da casa" (`provider_config`) deixou de alimentar o chat: ele agora é uma linha
+ *  como qualquer outra na lista (migrada na subida). Quem não vê nenhum provedor não tem chat. */
 export async function resolverProvider(
   tenant: string,
-  escolha?: { provedor?: string; modelo?: string },
+  escolha?: { provedor?: string; modelo?: string; operador?: boolean },
 ): Promise<CfgResolvida | null> {
-  /* v3.56 — a compactação é da CONTA (como as instruções): vale igual para provider
-     nomeado, padrão da casa ou linha própria. */
+  /* v3.56 — a compactação é da CONTA (como as instruções): vale igual para qualquer provedor. */
   const comp = await lerOpcoesCompactacao(tenant);
+  const user: Usuario = { tenant, operador: Boolean(escolha?.operador) };
   const nome = String(escolha?.provedor ?? "").trim();
   if (nome) {
     const r = await q<Linha>(
@@ -235,6 +236,8 @@ export async function resolverProvider(
     );
     const l = r.rows[0];
     if (!l) throw erro422(`provedor "${nome}" não está cadastrado`);
+    /* v3.60: escolher pelo nome o provedor PRIVADO de outra conta não é caminho de fuga */
+    if (!podeVerProvedor(user, l)) throw erro422(`provedor "${nome}" não está disponível para a sua conta`);
     const cfg = cfgDeProvedorLinha(l);
     if (!cfg) throw erro409(`provedor "${nome}" está incompleto ou desligado`);
     const modelo = String(escolha?.modelo ?? "").trim();
@@ -251,35 +254,42 @@ export async function resolverProvider(
     cfg.comp = comp;
     return cfg;
   }
-  /* v3.19: um nomeado marcado como "padrão" do escopo manda no provider_config */
+  /* padrão: o marcado no escopo do usuário vence; depois o público marcado como padrão.
+     Só vale o que ESTE usuário enxerga — padrão de outra conta não serve (senão o chat
+     do cliente falaria com o modelo privado do operador). */
   const pd = await q<Linha>(
-    `SELECT * FROM provedores WHERE escopo = ANY($1) AND padrao = true AND ativo = true
-     ORDER BY (escopo = $2) DESC LIMIT 1`,
-    [[tenant, GLOBAL], tenant],
+    `SELECT * FROM provedores WHERE padrao = true AND ativo = true
+     ORDER BY (escopo = $2) DESC, (escopo = $1) DESC LIMIT 20`,
+    [GLOBAL, tenant],
   );
-  const viaPadrao = cfgDeProvedorLinha(pd.rows[0]);
+  const linhaPadrao = pd.rows.find((l) => podeVerProvedor(user, l));
+  const viaPadrao = cfgDeProvedorLinha(linhaPadrao);
   const modeloSolto = String(escolha?.modelo ?? "").trim();
   if (viaPadrao) {
     if (modeloSolto) viaPadrao.modelo = modeloSolto;
     viaPadrao.comp = comp;
     return viaPadrao;
   }
-  const r = await q<Linha>(
+  /* v3.60 — sem PADRÃO não há chat (regra do dono: "se não tiver padrão, não exibe o chat").
+     Nada de escolher "o primeiro visível": isso faria a conta cair no provedor de outro
+     cadastro sem ninguém ter marcado. */
+  /* v3.60 — compatibilidade: a linha antiga de `provider_config` (rotas antigas, testes e
+     instalações que ainda não migraram) continua valendo como provedor do escopo dela. A linha
+     global é pública por definição; a do tenant vale para ele. Sem isso, quem configurasse pelo
+     caminho antigo levaria "chat desligado" mesmo tendo provedor salvo. */
+  const legado = await q<Linha>(
     `SELECT * FROM provider_config
-     WHERE escopo IN ($1, $2)
-     ORDER BY (escopo = $1 AND base_url <> '' AND modelo <> '') DESC,
-              (escopo = $2) DESC,
-              (escopo = $1) DESC
-     LIMIT 1`,
+     WHERE escopo IN ($1, $2) AND ativo = true AND base_url <> '' AND modelo <> ''
+     ORDER BY (escopo = $1) DESC, (escopo = $2) DESC LIMIT 1`,
     [tenant, GLOBAL],
   );
-  const l = r.rows[0];
-  if (!l || !l.ativo || !l.base_url || !l.modelo) return null;
+  const l = legado.rows[0];
+  if (!l) return null;
   return {
     escopo: l.escopo,
     provedor: null,
     tipo: l.tipo,
-    base_url: l.base_url.replace(/\/+$/, ""),
+    base_url: String(l.base_url).replace(/\/+$/, ""),
     modelo: l.modelo,
     chave: l.chave,
     temperatura: Number(l.temperatura),
@@ -292,7 +302,7 @@ export async function resolverProvider(
     reserva_tokens: Number(l.reserva_tokens ?? RESERVA_PADRAO),
     silencio_s: Number(l.silencio_s ?? 0),
     ...planoDeJanela(l),
-    ativo: l.ativo,
+    ativo: true,
   };
 }
 
@@ -444,8 +454,30 @@ export async function verProvider(user: Usuario, tenantArg?: string | null) {
   const plano = planoDeJanela(l);
   /* v3.35: a instrução mostrada é a da CONTA (não a da linha que por acaso serve o chat) */
   const instrucoes = await lerInstrucoes(tenant);
+  /* v3.60 — o "configurado" agora é: existe pelo menos um provedor que esta conta enxerga.
+     A tabela da tela lista todos (aquela lista já vem filtrada por visibilidade). */
+  const visiveis = await q<Record<string, any>>(
+    `SELECT * FROM provedores WHERE ativo = true AND base_url <> '' AND modelo <> ''
+     ORDER BY (escopo = $1) DESC, padrao DESC, nome`,
+    [tenant],
+  );
+  const podeUsar = visiveis.rows.filter((x) => podeVerProvedor(user, x));
+  /* v3.60 — a linha antiga (provider_config) também conta como provedor disponível: ela continua
+     atendendo quem foi configurado pelo caminho antigo. */
+  const legadoOk = await q<Linha>(
+    `SELECT 1 FROM provider_config
+     WHERE escopo IN ($1, $2) AND ativo = true AND base_url <> '' AND modelo <> '' LIMIT 1`,
+    [tenant, GLOBAL],
+  );
+  const lServindo = (l && podeVerProvedor(user, l) ? l : podeUsar[0] ?? l) as Record<string, any> | undefined;
+  const padraoVisivel = podeUsar.find((x) => Boolean(x.padrao));
   return {
-    configurado: Boolean(l?.ativo && l?.base_url && l?.modelo),
+    /* v3.60 — "configurado" = existe PADRÃO que esta conta enxerga. Sem padrão não há chat
+       (regra do dono), então a tela precisa refletir isso, não a mera existência de linhas. */
+    configurado: Boolean(padraoVisivel) || legadoOk.rows.length > 0,
+    servindo: lServindo?.nome ?? null,
+    publico: lServindo?.publico === undefined ? null : Boolean(lServindo.publico),
+    padrao_nome: padraoVisivel?.nome ?? null,
     escopo: l?.escopo ?? null,
     origem: usaPropria && propria.rows[0] ? "propria" : global.rows[0] ? "global" : null,
     tem_global: Boolean(global.rows[0]),
@@ -579,6 +611,54 @@ export async function salvarProvider(
       body.ativo !== false, memoriaTurnos, verbatimTurnos, reservaTokens, contextoTokens, silencioS,
     ],
   );
+  /* v3.60 — a rota antiga continua aceita (compatibilidade), mas ela agora também aparece na
+     LISTA de provedores: sem isso o operador salvava aqui e não via a linha na tela nova. */
+  if (baseUrl && modelo) {
+    const nomeLista = modelo.charAt(0).toUpperCase() + modelo.slice(1);
+    await q(
+      `INSERT INTO provedores (escopo, nome, tipo, base_url, chave, modelo, temperatura, system_prompt,
+          mcp_interno, max_rodadas, ativo, padrao, publico, memoria_turnos, verbatim_turnos,
+          reserva_tokens, contexto_tokens, silencio_s, atualizado_em)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'',$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, now())
+       ON CONFLICT (escopo, nome) DO UPDATE SET
+         tipo = EXCLUDED.tipo, base_url = EXCLUDED.base_url, chave = EXCLUDED.chave, modelo = EXCLUDED.modelo,
+         temperatura = EXCLUDED.temperatura, mcp_interno = EXCLUDED.mcp_interno, max_rodadas = EXCLUDED.max_rodadas,
+         ativo = EXCLUDED.ativo, publico = EXCLUDED.publico,
+         memoria_turnos = EXCLUDED.memoria_turnos, verbatim_turnos = EXCLUDED.verbatim_turnos,
+         reserva_tokens = EXCLUDED.reserva_tokens, contexto_tokens = EXCLUDED.contexto_tokens,
+         silencio_s = EXCLUDED.silencio_s, atualizado_em = now()
+       RETURNING id`,
+      [
+        escopo,
+        nomeLista,
+        tipo,
+        baseUrl,
+        chaveNova,
+        modelo,
+        temperatura,
+        mcpInterno,
+        maxRodadas,
+        body.ativo !== false,
+        escopo === GLOBAL,
+        escopo === GLOBAL,
+        memoriaTurnos,
+        verbatimTurnos,
+        reservaTokens,
+        contextoTokens,
+        silencioS,
+      ],
+    ).then(async (r) => {
+      /* a linha salva pela rota antiga é o PADRÃO do escopo — é o que ela sempre significou */
+      const id = Number(r.rows[0]?.id ?? 0);
+      if (!id) return;
+      if (body.ativo === false) {
+        await q(`UPDATE provedores SET padrao = false WHERE id = $1`, [id]);
+      } else {
+        await q(`UPDATE provedores SET padrao = false WHERE escopo = $1 AND id <> $2`, [escopo, id]);
+        await q(`UPDATE provedores SET padrao = true WHERE id = $1`, [id]);
+      }
+    });
+  }
   /* devolve a linha que foi escrita (antes, salvar o global mostrava a própria e parecia "não configurado") */
   /* devolve a linha que FOI ESCRITA (escopo), não a do usuário: a tela recarrega o mesmo alvo
      que gravou, senão o texto salvo parece sumir quando o painel está num cliente selecionado. */
@@ -1039,10 +1119,10 @@ export async function responderChat(
   const tenant = tenantFor(user, body.tenant ?? null);
   const memoria = (body.memoria ?? "").trim();
   /* v3.19: o usuário pode escolher o provedor (e o modelo) na hora da conversa */
-  const cfg = await resolverProvider(tenant, { provedor: body.provedor, modelo: body.modelo });
+  const cfg = await resolverProvider(tenant, { provedor: body.provedor, modelo: body.modelo, operador: user.operador });
   if (!cfg) {
     throw erro409(
-      "chat desligado: configure um provider em Configurações (tipo, URL, modelo e chave). A Busca continua funcionando.",
+      "chat desligado: não há provedor disponível para esta conta. Peça ao administrador para cadastrar um provedor ou torná-lo público.",
     );
   }
   /* v3.35 — a instrução é da CONTA, não do modelo: vale para o provider nomeado escolhido na
