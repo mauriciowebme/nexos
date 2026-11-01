@@ -1110,6 +1110,10 @@ export function Chat({
   const naFila = snap.fila.length;
   const msgs = snap.msgs;
   const rodando = snap.rodando;
+  /* v3.62 — o botão obedece ao campo: com texto digitado ele ENVIA (a fala entra no meio do
+     rastro, o steering da v3.42); com o campo vazio ele é o "parar". Antes, durante o turno,
+     o botão era sempre "parar" e o toque matava a resposta com a mensagem ainda no campo. */
+  const botaoParar = rodando && !pergunta.trim();
 
   /* o botão "regenerar" só faz sentido na ÚLTIMA resposta (a que está no fim da corrida) */
   let idxUltimaResposta = -1;
@@ -1677,26 +1681,28 @@ export function Chat({
               </button>
             )}
             {/* v3.22 (preview aprovado): "parar" continua existindo — vira o próprio botão de
-               enviar enquanto a resposta chega (quadrado). O id muda de chatEnviar para
-               chatParar no estado rodando, mantendo os dois ganchos do E2E vivos no seu
-               estado; a fila continua pelo Enter no campo. */}
+               enviar enquanto a resposta chega (quadrado). v3.62: o botão obedece ao CAMPO —
+               assim que a pessoa escreve, ele volta a ser o enviar (a fala entra no rastro);
+               com o campo vazio ele é o parar. Os dois ganchos do E2E seguem vivos. */}
             <button
-              id={rodando ? "chatParar" : "chatEnviar"}
-              className={"chat-enviar" + (rodando ? " chat-enviar-parando" : "")}
-              disabled={rodando ? snap.parando : !pergunta.trim()}
+              id={botaoParar ? "chatParar" : "chatEnviar"}
+              className={"chat-enviar" + (botaoParar ? " chat-enviar-parando" : "")}
+              disabled={botaoParar ? snap.parando : !pergunta.trim()}
               title={
-                rodando
+                botaoParar
                   ? snap.parando
                     ? "parando…"
                     : "parar esta resposta"
                   : editando !== null
                     ? "reenviar editada"
-                    : "enviar"
+                    : rodando
+                      ? "mandar agora, no meio da resposta"
+                      : "enviar"
               }
-              aria-label={rodando ? "parar a resposta" : "enviar"}
-              onClick={rodando ? pararResposta : editando !== null ? confirmarEdicao : enviar}
+              aria-label={botaoParar ? "parar a resposta" : "enviar"}
+              onClick={botaoParar ? pararResposta : editando !== null ? confirmarEdicao : enviar}
             >
-              {rodando ? (
+              {botaoParar ? (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <rect x="6" y="6" width="12" height="12" rx="2" />
                 </svg>
