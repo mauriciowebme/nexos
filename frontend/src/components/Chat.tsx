@@ -537,6 +537,24 @@ export function Chat({
     definirSelecao(chave, s);
   };
   const selProvedor = provedores.find((x) => x.ativo && x.nome === sel.provedor);
+  /* v3.60: "automático" mostra para quem a conversa vai (o padrão que esta conta enxerga) */
+  const padraoNome =
+    provedores.find((x) => x.padrao && x.ativo)?.nome ??
+    (provedores.filter((x) => x.ativo).length === 1 ? provedores.filter((x) => x.ativo)[0].nome : "");
+  /* v3.60: escolha gravada no navegador que não existe mais (provedor desligado/apagado ou
+     modelo fora da lista) volta ao automático — senão o chat abre preso num alvo fantasma. */
+  useEffect(() => {
+    if (!provedores.length || !sel.provedor) return;
+    const p = provedores.find((x) => x.ativo && x.nome === sel.provedor);
+    if (!p) {
+      mudarSelecao({ provedor: "", modelo: "" });
+      return;
+    }
+    if (sel.modelo) {
+      const modelos = p.modelos.length ? p.modelos : [p.modelo];
+      if (!modelos.includes(sel.modelo)) mudarSelecao({ provedor: p.nome, modelo: "" });
+    }
+  }, [provedores, sel.provedor, sel.modelo]);
 
   useEffect(() => {
     setMemoria(escopo.memoria);
@@ -1121,7 +1139,7 @@ export function Chat({
 
       {semProvider && (
         <div className="aviso" id="avisoProvider">
-          <span>Chat desligado: nenhum provider configurado. A Busca continua funcionando.</span>
+          <span>Chat desligado: nenhum provedor disponível para esta conta. A Busca continua funcionando.</span>
           {/* v3.4: provider é decisão de admin — o comum não tem Configurações na tela */}
           {operador ? (
             <button className="btn btn-mini ml-auto" onClick={onIrConfig}>
@@ -1449,7 +1467,7 @@ export function Chat({
                         value={sel.provedor}
                         onChange={(e) => mudarSelecao({ provedor: e.target.value, modelo: "" })}
                       >
-                        <option value="">padrão da casa</option>
+                        <option value="">automático{padraoNome ? ` — ${padraoNome}` : ""}</option>
                         {provedores.filter((p) => p.ativo).map((p) => (
                           <option key={p.id} value={p.nome}>
                             {p.nome}

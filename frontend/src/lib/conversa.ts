@@ -199,13 +199,49 @@ function nova(): Conversa {
 }
 
 /* v3.19: provedor/modelo escolhidos POR CONVERSA — a tela lembra e todo reenvio
- * (novo, regenerar, fila, edição) leva junto. "" = padrão da casa. */
+ * (novo, regenerar, fila, edição) leva junto. "" = padrão da casa.
+ * v3.60: a escolha agora SOBREVIVE ao recarregamento. Duas camadas no navegador:
+ * a da CONVERSA (`tenant|gaveta`) vence; a da CONTA (`tenant`) é a última usada em
+ * qualquer conversa — recarregar não devolve o chat ao automático sem o dono pedir. */
 const selecoes = new Map<string, { provedor?: string; modelo?: string }>();
-export function definirSelecao(chave: string, sel: { provedor?: string; modelo?: string }): void {
+type Selecao = { provedor?: string; modelo?: string };
+const loja = (): Storage | null => {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+};
+const chaveDaConta = (chave: string) => `nexos:selecao:conta:${chave.split("|")[0] || "-"}`;
+const chaveDaConversa = (chave: string) => `nexos:selecao:conversa:${chave}`;
+function lerGravada(chave: string): Selecao | null {
+  const s = loja();
+  if (!s) return null;
+  try {
+    const bruto = s.getItem(chave);
+    if (!bruto) return null;
+    const v = JSON.parse(bruto) as { provedor?: unknown; modelo?: unknown };
+    return { provedor: String(v.provedor ?? ""), modelo: String(v.modelo ?? "") };
+  } catch {
+    return null;
+  }
+}
+function gravar(chave: string, sel: Selecao): void {
+  const s = loja();
+  if (!s) return;
+  try {
+    s.setItem(chave, JSON.stringify({ provedor: sel.provedor ?? "", modelo: sel.modelo ?? "" }));
+  } catch {
+    /* navegador em modo privado ou cota cheia: a escolha vale só nesta sessão */
+  }
+}
+export function definirSelecao(chave: string, sel: Selecao): void {
   selecoes.set(chave, sel);
+  gravar(chaveDaConversa(chave), sel);
+  gravar(chaveDaConta(chave), sel);
 }
 export function getSelecao(chave: string): { provedor: string; modelo: string } {
-  const s = selecoes.get(chave) ?? {};
+  const s = selecoes.get(chave) ?? lerGravada(chaveDaConversa(chave)) ?? lerGravada(chaveDaConta(chave)) ?? {};
   return { provedor: s.provedor ?? "", modelo: s.modelo ?? "" };
 }
 
