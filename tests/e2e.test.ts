@@ -1300,7 +1300,41 @@ test("nexos v2 — suíte completa", async (t) => {
     });
     f.check("provider desligado", r.status === 200, r.texto.slice(0, 120));
     r = await call("POST", "/chat", { key: TESTKEY, corpo: { pergunta: "qualquer coisa", memoria: GAV } });
-    f.check("chat sem provider -> 409 explicando", r.status === 409 && /provider/i.test(r.json?.detail ?? ""), r.texto.slice(0, 160));
+    f.check("chat sem provedor visível -> 409 explicando", r.status === 409 && /provedor/i.test(r.json?.detail ?? ""), r.texto.slice(0, 160));
+
+    /* v3.60 — público x privado e padrão: o dono é quem decide o que a conta enxerga.
+       A prova usa um provedor PRIVADO (não aparece para o comum) e um PÚBLICO com padrão. */
+    const V360 = "suite-v360";
+    let rp360 = await call("PUT", "/provedores", {
+      key: OPKEY,
+      corpo: { nome: "v360priv", base_url: "http://127.0.0.1:9911/v1", modelo: "m360", publico: false, ativo: true, tenant: "global" },
+    });
+    const idPriv = Number(rp360.json?.provedor?.id ?? 0);
+    f.check("v3.60: provedor PRIVADO é aceito e marcado como privado", rp360.status === 200 && rp360.json?.provedor?.publico === false && idPriv > 0, rp360.texto.slice(0, 200));
+    r = await call("GET", "/provedores", { key: TESTKEY });
+    f.check("v3.60: o comum NÃO vê o provedor privado", !(r.json?.provedores ?? []).some((x: any) => x.nome === "v360priv"), (r.json?.provedores ?? []).map((x: any) => x.nome).join(","));
+    r = await call("GET", "/provedores", { key: OPKEY });
+    f.check("v3.60: o operador vê o próprio privado", (r.json?.provedores ?? []).some((x: any) => x.nome === "v360priv"), (r.json?.provedores ?? []).map((x: any) => x.nome).join(","));
+    r = await call("POST", "/chat", { key: TESTKEY, corpo: { pergunta: "oi", memoria: V360, provedor: "v360priv" } });
+    f.check("v3.60: o comum NÃO conversa com o privado de outra conta (422)", r.status === 422, r.texto.slice(0, 160));
+
+    rp360 = await call("PUT", "/provedores", {
+      key: OPKEY,
+      corpo: { nome: "v360pub", base_url: "http://127.0.0.1:9911/v1", modelo: "m360", publico: true, padrao: true, ativo: true, tenant: "global" },
+    });
+    const idPub = Number(rp360.json?.provedor?.id ?? 0);
+    f.check("v3.60: provedor PÚBLICO marcado como padrão", rp360.status === 200 && rp360.json?.provedor?.publico === true && rp360.json?.provedor?.padrao === true, rp360.texto.slice(0, 200));
+    r = await call("GET", "/provedores", { key: TESTKEY });
+    f.check("v3.60: o comum vê o público", (r.json?.provedores ?? []).some((x: any) => x.nome === "v360pub" && x.padrao === true), (r.json?.provedores ?? []).map((x: any) => x.nome + ":" + x.padrao).join(","));
+    r = await call("GET", "/config/provider", { key: TESTKEY });
+    f.check("v3.60: /config/provider diz que há provedor visível e qual é o padrão", r.json?.configurado === true && r.json?.padrao_nome === "v360pub", r.texto.slice(0, 220));
+
+    /* alternar sem formulário: PUT com o mesmo nome e publico invertido (o que o botão faz) */
+    r = await call("PUT", "/provedores", { key: OPKEY, corpo: { nome: "v360pub", base_url: "http://127.0.0.1:9911/v1", modelo: "m360", chave: "***", publico: false, tenant: "global" } });
+    f.check("v3.60: interruptor torna privado sem perder o resto (modelo e url ficam)", r.status === 200 && r.json?.provedor?.publico === false && r.json?.provedor?.modelo === "m360", r.texto.slice(0, 200));
+    r = await call("GET", "/provedores", { key: TESTKEY });
+    f.check("v3.60: ao virar privado, o comum deixa de ver", !(r.json?.provedores ?? []).some((x: any) => x.nome === "v360pub"), (r.json?.provedores ?? []).map((x: any) => x.nome).join(","));
+    for (const id of [idPriv, idPub]) await call("DELETE", `/provedores/${id}`, { key: OPKEY });
 
     /* ---- guarda do último operador no APAGAR (v3.2.3: mesma do PATCH) ---- */
     const listaOps = await call("GET", "/usuarios", { key: OPKEY });
@@ -1771,7 +1805,7 @@ test("nexos v2 — suíte completa", async (t) => {
     console.log("-- erros do fluxo viram evento, nunca conexão quebrada");
     await call("PUT", "/config/provider", { key: OPKEY, corpo: { tipo: "litellm", base_url: "http://127.0.0.1:9914/v1", modelo: "fluxo", mcp_interno: true, max_rodadas: 3, ativo: false, global: true } });
     const fluxoErro = await fluxo(TESTKEY, { pergunta: "com provider desligado", memoria: GAV });
-    f.check("erro antes do primeiro pedaço chega como evento erro", fluxoErro.eventos.length === 1 && fluxoErro.eventos[0]?.tipo === "erro" && /provider/i.test(String(fluxoErro.eventos[0]?.detalhe)), fluxoErro.eventos);
+    f.check("erro antes do primeiro pedaço chega como evento erro", fluxoErro.eventos.length === 1 && fluxoErro.eventos[0]?.tipo === "erro" && /provedor|provider/i.test(String(fluxoErro.eventos[0]?.detalhe)), fluxoErro.eventos);
 
     /* limpeza */
     await call("PUT", "/config/provider", { key: OPKEY, corpo: { tipo: "litellm", base_url: "http://127.0.0.1:9914/v1", modelo: "fluxo", system_prompt: "", mcp_interno: false, max_rodadas: 3, ativo: false, global: true } });
@@ -3407,6 +3441,60 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     await call("DELETE", `/chat?memoria=${GAV}`, { key: TESTKEY });
     if (CONTAINER) execFileSync("docker", ["exec", CONTAINER, "sh", "-c", `${pkill(PORTA)} || true`]);
     f.fechar("v3.19 provedores");
+  });
+
+  /* ------------------------------------------------------------------ v3.60 */
+
+  await bloco(t, "v3.60: provedor padrão por escopo + escolha lembrada no navegador", async () => {
+    const f = fiscal();
+
+    console.log("-- padrão: a resposta traz a linha JÁ marcada (não a lida antes do update)");
+    const a = await call("PUT", "/provedores", {
+      key: OPKEY,
+      corpo: { nome: "padrao360a", tipo: "openai", base_url: "http://127.0.0.1:9/v1", modelo: "ma", chave: "x", tenant: "global" },
+    });
+    const b = await call("PUT", "/provedores", {
+      key: OPKEY,
+      corpo: { nome: "padrao360b", tipo: "openai", base_url: "http://127.0.0.1:9/v1", modelo: "mb", chave: "x", tenant: "global" },
+    });
+    const ia = Number(a.json?.provedor?.id ?? 0);
+    const ib = Number(b.json?.provedor?.id ?? 0);
+    f.check("dois provedores de prova criados", ia > 0 && ib > 0, `${a.status}/${b.status} ${a.texto.slice(0, 80)}`);
+
+    let r = await call("PATCH", "/provedores/padrao", { key: OPKEY, corpo: { id: ia } });
+    f.check(
+      "marcar padrão devolve o próprio provedor já com padrao=true",
+      r.status === 200 && r.json?.provedor?.id === ia && r.json?.provedor?.padrao === true,
+      r.texto.slice(0, 200),
+    );
+
+    r = await call("PATCH", "/provedores/padrao", { key: OPKEY, corpo: { id: ib } });
+    f.check(
+      "trocar o padrão marca o novo na própria resposta",
+      r.status === 200 && r.json?.provedor?.id === ib && r.json?.provedor?.padrao === true,
+      r.texto.slice(0, 200),
+    );
+
+    r = await call("GET", "/provedores", { key: OPKEY });
+    const lista360 = r.json?.provedores ?? [];
+    const pa = lista360.find((x: any) => x.id === ia) ?? {};
+    const pb = lista360.find((x: any) => x.id === ib) ?? {};
+    f.check("padrão é UM por escopo (o anterior é desmarcado)", pb.padrao === true && pa.padrao === false, JSON.stringify({ a: pa.padrao, b: pb.padrao }));
+
+    console.log("-- front: a escolha vive no navegador (chave presente no bundle servido)");
+    const html360 = await (await fetch(BASE + "/")).text();
+    const m360 = /src="([^"]*\/painel\/assets\/[^"]+\.js)"/.exec(html360);
+    const js360 = m360 ? await (await fetch(BASE + m360[1])).text() : "";
+    f.check(
+      "o bundle serve a memória da escolha (nexos:selecao:conta via localStorage)",
+      js360.includes("nexos:selecao:conta") && js360.includes("localStorage"),
+      `${js360.length} chars`,
+    );
+    f.check("o bundle guarda também a escolha por conversa", js360.includes("nexos:selecao:conversa"), "");
+
+    await call("DELETE", `/provedores/${ia}`, { key: OPKEY });
+    await call("DELETE", `/provedores/${ib}`, { key: OPKEY });
+    f.fechar("v3.60 padrão e memória");
   });
 
   await bloco(t, "v3.23: tela gerada pelo agente (mostrar_tela) — card com preview funcional", async () => {
