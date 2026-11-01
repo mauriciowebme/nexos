@@ -119,21 +119,144 @@ def ferramentas():
 ${funcoes}`;
 }
 
-/** Gera o `sitecustomize.py`: rede do script só pelo proxy e nenhuma saída por processo. */
-function moduloRede(porta: number): string {
-  return `"""Rede e processos do sandbox (T053).
+/** Gera o `sitecustomize.py`.
+ *
+ *  v3.63 — o cadeado saiu do gancho de `ctypes` e foi para o KERNEL:
+ *  Landlock limita o disco à pasta da conta (leitura do sistema, escrita só nas pastas dele)
+ *  e seccomp recusa rede, exec e troca de namespace. Assim numpy/pandas/openpyxl, que usam
+ *  `ctypes` para carregar biblioteca nativa na importação, voltam a funcionar sem reabrir
+ *  a rede: quem barra o `socket` agora é o kernel, não o Python.
+ *
+ *  Os ganchos de `socket`/processo continuam, para a mensagem amigável e para o proxy.
+ */
+function moduloRede(porta: number, escreve: string[], le: string[]): string {
+  const lista = (v: string[]) => JSON.stringify(v);
+  return `"""Rede, processos e disco do sandbox (T053, v3.63).
 
-- Conexao de rede: SO pelo proxy local do nexos (127.0.0.1:${porta}).
-- Processo: subprocess/os.system/exec/fork e ctypes sao recusados, para que um
-  script nao escape do proxy chamando curl, wget ou binario proprio.
-
-O gancho de auditoria nao pode ser removido em tempo de execucao: quem instala
-depois dele tambem e chamado, mas nada desliga o que ja esta posto.
+- Rede: so pelo proxy local (127.0.0.1:${porta}); o kernel tambem recusa socket/connect.
+- Processo: subprocess/os.system/exec e troca de namespace sao recusados.
+- Disco (Landlock): leitura do sistema; escrita so em ${escreve.join(", ")}.
+- ctypes e permitido: sem ele numpy/pandas/openpyxl nao importam.
 """
-import socket as _sock
+import errno as _errno
+import os as _os
 import sys as _sys
 
 _PORTA = ${porta}
+_ESCREVE = ${lista(escreve)}
+_LE = ${lista(le)}
+
+
+def _avisar(msg):
+    try:
+        _sys.stderr.write("[sandbox] " + msg + "\\n")
+    except Exception:
+        pass
+
+
+def _no_new_privs():
+    import ctypes
+
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    if libc.prctl(38, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS")
+
+
+def _landlock():
+    """Restringe o disco: escrita nas pastas da conta, leitura no sistema."""
+    import ctypes
+
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+
+    class Ruleset(ctypes.Structure):
+        _fields_ = [
+            ("handled_access_fs", ctypes.c_uint64),
+            ("handled_access_net", ctypes.c_uint64),
+            ("scoped", ctypes.c_uint64),
+        ]
+
+    class Regra(ctypes.Structure):
+        _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
+
+    EXEC, WRITE, READ, READDIR = 1, 2, 4, 8
+    RMDIR, RMFILE, MKDIR, MKREG = 16, 32, 128, 256
+    MKSYM, REFER, TRUNC = 4096, 8192, 16384
+    TUDO = 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096
+    TUDO |= REFER | TRUNC
+    RO = EXEC | READ | READDIR
+    RW = TUDO & ~64 & ~2048 & ~512  # sem criar dispositivo nem socket de arquivo
+
+    attr = Ruleset(TUDO, 0, 0)
+    fd = libc.syscall(444, ctypes.byref(attr), ctypes.c_size_t(ctypes.sizeof(attr)), ctypes.c_uint32(0))
+    if fd < 0:
+        raise OSError(ctypes.get_errno(), "landlock_create_ruleset")
+    try:
+        for caminhos, acessos in ((_ESCREVE, RW), (_LE, RO)):
+            for caminho in caminhos:
+                try:
+                    pfd = _os.open(caminho, _os.O_PATH | _os.O_CLOEXEC)
+                except OSError:
+                    continue
+                try:
+                    regra = Regra(acessos, pfd)
+                    libc.syscall(445, ctypes.c_int(fd), ctypes.c_int(1), ctypes.byref(regra), ctypes.c_uint32(0))
+                finally:
+                    _os.close(pfd)
+        if libc.syscall(446, ctypes.c_int(fd), ctypes.c_uint32(0)) != 0:
+            raise OSError(ctypes.get_errno(), "landlock_restrict_self")
+    finally:
+        _os.close(fd)
+
+
+def _seccomp():
+    """Recusa exec, ptrace e troca de namespace no kernel (threads continuam liberadas)."""
+    import ctypes
+
+    sec = ctypes.CDLL("libseccomp.so.2", use_errno=True)
+    sec.seccomp_init.restype = ctypes.c_void_p
+    sec.seccomp_init.argtypes = [ctypes.c_uint32]
+    sec.seccomp_rule_add.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint]
+    sec.seccomp_load.argtypes = [ctypes.c_void_p]
+    sec.seccomp_release.argtypes = [ctypes.c_void_p]
+    ctx = sec.seccomp_init(ctypes.c_uint32(0x7FFF0000))  # SCMP_ACT_ALLOW
+    if not ctx:
+        raise OSError("seccomp_init")
+    negar = 0x00050000 | _errno.EPERM  # SCMP_ACT_ERRNO(EPERM)
+    # rede NAO entra aqui: o proxy do nexos mora em 127.0.0.1 e o seccomp nao distingue
+    # destino (o argumento de connect e ponteiro). Quem orienta a rede e o gancho abaixo;
+    # o cadeado duro desta versao e o disco (Landlock) e o processo (exec/namespace).
+    syscalls = {
+        "execve": 59,
+        "execveat": 322,
+        "ptrace": 101,
+        "unshare": 272,
+        "setns": 308,
+        "mount": 165,
+        "umount2": 166,
+    }
+    try:
+        for nome, nr in syscalls.items():
+            if sec.seccomp_rule_add(ctx, ctypes.c_uint32(negar), nr, 0) != 0:
+                raise OSError("regra " + nome)
+        if sec.seccomp_load(ctx) != 0:
+            raise OSError("seccomp_load")
+    finally:
+        sec.seccomp_release(ctx)
+
+
+try:
+    _no_new_privs()
+    _landlock()
+except Exception as _e:  # kernel sem Landlock: segue com os ganchos do Python
+    _avisar("disco sem restricao do kernel: " + str(_e))
+try:
+    _seccomp()
+except Exception as _e:
+    _avisar("rede sem restricao do kernel: " + str(_e))
+
+
+import socket as _sock
+
 _orig = _sock.socket
 
 _PROXY = ("127.0.0.1", "::1", "localhost")
@@ -181,11 +304,6 @@ def _auditar(evento, args):
         raise PermissionError(
             "execucao de processo bloqueada no sandbox: o script roda direto; "
             "para buscar dados use HTTP_PROXY/HTTPS_PROXY ou as ferramentas do nexos"
-        )
-    if evento.startswith("ctypes."):
-        raise PermissionError(
-            "ctypes bloqueado no sandbox: nao e possivel chamar biblioteca nativa "
-            "para contornar as regras de rede e processo"
         )
 
 
@@ -379,7 +497,17 @@ export async function rodarPython(
   const pasta = await mkdtemp(path.join(tmpdir(), "nexos-py-"));
   const script = path.join(pasta, "script.py");
   await writeFile(path.join(pasta, "nexos.py"), moduloPonte(permitidas.map((t) => t.name), descricoes), "utf8");
-  await writeFile(path.join(pasta, "sitecustomize.py"), moduloRede(proxy.porta), "utf8");
+  /* v3.63 — Landlock: escrita só nas pastas da conta e no diretório do script;
+     leitura no sistema (stdlib, venv, /etc, /proc). Quem cuida de rede e processo é o seccomp. */
+  await writeFile(
+    path.join(pasta, "sitecustomize.py"),
+    moduloRede(
+      proxy.porta,
+      [pastaSaida, casa, pasta],
+      [base, pasta, "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/dev", "/tmp"],
+    ),
+    "utf8",
+  );
   await writeFile(script, codigo, "utf8");
   await chmod(pasta, 0o755).catch(() => {});
   for (const nome of ["nexos.py", "sitecustomize.py", "script.py"]) {
@@ -398,6 +526,9 @@ export async function rodarPython(
       PYTHONIOENCODING: "utf-8",
       PYTHONUNBUFFERED: "1",
       PYTHONDONTWRITEBYTECODE: "1",
+      OPENBLAS_NUM_THREADS: "1",
+      OMP_NUM_THREADS: "1",
+      MKL_NUM_THREADS: "1",
       HTTP_PROXY: proxyUrl,
       HTTPS_PROXY: proxyUrl,
       http_proxy: proxyUrl,
