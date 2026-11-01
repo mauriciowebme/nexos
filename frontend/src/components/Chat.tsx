@@ -1124,10 +1124,12 @@ export function Chat({
     <section className="chat-tela flex flex-col gap-3 max-[720px]:gap-0" id="telaChat">
       {/* v3.16: a pílula (modelo+gaveta) subiu para a lateral e o reset desceu para o pé,
            ao lado da caixa de escrita. Esta linha só existe no celular, como porta ☰. */}
+      {/* v3.61: a linha do topo existe em TODAS as larguras — no celular é a porta ☰,
+           no desktop carrega só ⚙ ferramentas e nova conversa (o piso ficou só com a escrita). */}
       <div className="chat-topo">
         <button
           id="chatMenuCelular"
-          className="chat-acao"
+          className="chat-menu-celular chat-acao"
           aria-label="abrir menu"
           title="menu"
           onClick={onAbrirMenu}
@@ -1135,6 +1137,89 @@ export function Chat({
           ☰
         </button>
         <span className="flex-1" />
+        <div className="chat-ajustes" ref={ajustesRef}>
+          <button
+            id="chatAjustes"
+            className="chat-ajustes-boto"
+            title="ferramentas da conversa (provider, modelo, exportar)"
+            aria-label="ferramentas da conversa"
+            aria-expanded={ajustesAberto}
+            onClick={() => setAjustesAberto((v) => !v)}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+          {ajustesAberto && (
+            <div className="chat-ajustes-pop" role="dialog" aria-label="ferramentas da conversa">
+              <div className="chat-ajustes-cab">⚙ ferramentas</div>
+              {provedores.some((p) => p.ativo) && (
+                <div className="chat-ajustes-modelos" data-testid="chatModelos">
+                  <select
+                    aria-label="provedor da conversa"
+                    title="que serviço responde esta conversa"
+                    value={sel.provedor}
+                    onChange={(e) => mudarSelecao({ provedor: e.target.value, modelo: "" })}
+                  >
+                    <option value="">automático{padraoNome ? ` — ${padraoNome}` : ""}</option>
+                    {provedores.filter((p) => p.ativo).map((p) => (
+                      <option key={p.id} value={p.nome}>
+                        {p.nome}
+                        {p.padrao ? " · padrão" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {selProvedor && (
+                    <select
+                      aria-label="modelo"
+                      title={
+                        selProvedor.modelos.length
+                          ? selProvedor.modelos_em
+                            ? "modelos descobertos (cache de " + selProvedor.modelos_em.slice(0, 10) + ")"
+                            : "modelos descobertos"
+                          : "só o modelo cadastrado"
+                      }
+                      value={sel.modelo || selProvedor.modelo}
+                      onChange={(e) => mudarSelecao({ provedor: sel.provedor, modelo: e.target.value })}
+                    >
+                      {(selProvedor.modelos.length ? selProvedor.modelos : [selProvedor.modelo]).map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+              <div className="chat-ajustes-botoes">
+                <button
+                  id="chatExportar"
+                  className="btn btn-mini"
+                  title="exportar a conversa (markdown)"
+                  onClick={exportarConversa}
+                >
+                  ⤓ exportar
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+        {/* v3.31.1 (dono, 27/10): o piso tem "nova conversa" (ação do dia a dia) e o
+            popover virou "⚙ ferramentas" (provider/modelo + exportar). */}
+        <button
+          id="chatNovaConversa"
+          className="chat-nova"
+          title="apagar esta conversa e recomeçar do zero"
+          aria-label="nova conversa"
+          onClick={() => void limpar()}
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z" />
+            <path d="M13 8v6M10 11h6" />
+          </svg>
+          <span className="chat-nova-rotulo">nova conversa</span>
+        </button>
       </div>
 
       {semProvider && (
@@ -1440,90 +1525,6 @@ export function Chat({
             </p>
           )}
           <div className="chat-piso-linha">
-            {/* v3.31.1: piso — [⚙] [＋ nova conversa] [campo………] [mic] [↑]. O popover
-               "⚙ ferramentas" guarda provider/modelo e exportar. */}
-            <div className="chat-ajustes" ref={ajustesRef}>
-              <button
-                id="chatAjustes"
-                className="chat-ajustes-boto"
-                title="ferramentas da conversa (provider, modelo, exportar)"
-                aria-label="ferramentas da conversa"
-                aria-expanded={ajustesAberto}
-                onClick={() => setAjustesAberto((v) => !v)}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="3" />
-                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                </svg>
-              </button>
-              {ajustesAberto && (
-                <div className="chat-ajustes-pop" role="dialog" aria-label="ferramentas da conversa">
-                  <div className="chat-ajustes-cab">⚙ ferramentas</div>
-                  {provedores.some((p) => p.ativo) && (
-                    <div className="chat-ajustes-modelos" data-testid="chatModelos">
-                      <select
-                        aria-label="provedor da conversa"
-                        title="que serviço responde esta conversa"
-                        value={sel.provedor}
-                        onChange={(e) => mudarSelecao({ provedor: e.target.value, modelo: "" })}
-                      >
-                        <option value="">automático{padraoNome ? ` — ${padraoNome}` : ""}</option>
-                        {provedores.filter((p) => p.ativo).map((p) => (
-                          <option key={p.id} value={p.nome}>
-                            {p.nome}
-                            {p.padrao ? " · padrão" : ""}
-                          </option>
-                        ))}
-                      </select>
-                      {selProvedor && (
-                        <select
-                          aria-label="modelo"
-                          title={
-                            selProvedor.modelos.length
-                              ? selProvedor.modelos_em
-                                ? "modelos descobertos (cache de " + selProvedor.modelos_em.slice(0, 10) + ")"
-                                : "modelos descobertos"
-                              : "só o modelo cadastrado"
-                          }
-                          value={sel.modelo || selProvedor.modelo}
-                          onChange={(e) => mudarSelecao({ provedor: sel.provedor, modelo: e.target.value })}
-                        >
-                          {(selProvedor.modelos.length ? selProvedor.modelos : [selProvedor.modelo]).map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  )}
-                  <div className="chat-ajustes-botoes">
-                    <button
-                      id="chatExportar"
-                      className="btn btn-mini"
-                      title="exportar a conversa (markdown)"
-                      onClick={exportarConversa}
-                    >
-                      ⤓ exportar
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-            {/* v3.31.1 (dono, 27/10): o piso tem "nova conversa" (ação do dia a dia) e o
-                popover virou "⚙ ferramentas" (provider/modelo + exportar). */}
-            <button
-              id="chatNovaConversa"
-              className="chat-nova"
-              title="apagar esta conversa e recomeçar do zero"
-              aria-label="nova conversa"
-              onClick={() => void limpar()}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-              <span className="chat-nova-rotulo">nova conversa</span>
-            </button>
             <div
               className="chat-composer"
               onClick={(e) => {

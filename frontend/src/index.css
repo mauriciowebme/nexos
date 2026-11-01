@@ -971,9 +971,22 @@
    velhas (.cartao/.barra/.campo/.btn) seguem valendo para as outras telas. */
 @layer components {
   .chat-topo {
-    /* v3.16: no desktop esta linha sumiu — sem pílula, sem reset, nada que mostrar.
-       No celular ela é a porta ☰ única da conversa. */
-    @apply mb-1.5 hidden flex-wrap items-center gap-2 max-[720px]:flex;
+    /* v3.61: a linha do topo vale em TODAS as larguras — no celular é a porta ☰,
+       no desktop carrega ⚙ ferramentas e nova conversa. O piso ficou só com a escrita. */
+    @apply mb-1.5 flex flex-wrap items-center gap-2;
+  }
+  /* ☰ só existe no celular; no desktop o menu é a lateral fixa */
+  .chat-topo .chat-menu-celular {
+    display: none;
+  }
+  @media (max-width: 720px) {
+    .chat-topo .chat-menu-celular {
+      display: inline-flex;
+    }
+  }
+  /* no topo os dois botões têm o MESMO peso visual (o "+" sozinho parecia ação menor) */
+  .chat-topo .chat-nova {
+    @apply border-bordaforte bg-[#2a3344] text-txt hover:border-[#43506a] hover:bg-[#333d51];
   }
   /* v3.16: a pílula do topo (modelo+gaveta) não existe mais — o contexto vive na
      lateral (.conv-bloco) e a ação desceu para a linha do campo (.chat-nova). */
@@ -1212,9 +1225,10 @@
     @apply border-azul/60 bg-[#2a3344] text-txt;
   }
   .chat-ajustes-pop {
+    /* v3.61: o botão subiu para o topo da conversa, então o painel abre PARA BAIXO. */
     position: absolute;
-    bottom: calc(100% + 10px);
-    left: 0;
+    top: calc(100% + 10px);
+    right: 0;
     z-index: 30;
     display: flex;
     flex-direction: column;
@@ -1231,13 +1245,13 @@
   .chat-ajustes-pop::after {
     content: "";
     position: absolute;
-    bottom: -5.5px;
-    left: 24px;
+    top: -5.5px;
+    right: 22px;
     width: 9px;
     height: 9px;
     background: var(--sup);
-    border-right: 1px solid var(--bordaforte);
-    border-bottom: 1px solid var(--bordaforte);
+    border-left: 1px solid var(--bordaforte);
+    border-top: 1px solid var(--bordaforte);
     transform: rotate(45deg);
   }
   .chat-ajustes-cab {
