@@ -108,7 +108,7 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
   const [teste, setTeste] = useState<{ ok: boolean; msg: string } | null>(null);
   const [ocupado, setOcupado] = useState(false);
   /* form dos providers nomeados (novo ou edição) */
-  const [novo, setNovo] = useState({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, escopoOrig: "global" });
+  const [novo, setNovo] = useState({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global" });
   const [editando, setEditando] = useState<string | null>(null);
   const [formNomeadoAberto, setFormNomeadoAberto] = useState(false);
   const [rodando, setRodando] = useState<string | null>(null);
@@ -158,33 +158,9 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
     void carregar();
   }, [carregar]);
 
-  function preencherPadrao() {
-    if (!p) return;
-    setTipo(p.tipo === "ollama" ? "ollama" : "openai");
-    setBaseUrl(p.base_url);
-    setModelo(p.modelo);
-    setTemperatura(String(p.temperatura));
-    setPrompt(p.system_prompt ?? "");
-    setRodadas(String(p.max_rodadas));
-    setMemoria(String(p.memoria_turnos ?? 12));
-    setVerbatim(String(p.verbatim_turnos ?? 20));
-    setThresholdK(String(p.comp?.thresholdK ?? 200));
-    setPercentual(String(p.comp?.percentualJanela ?? 90));
-    setTailCap(String(p.comp?.tailCharsCap ?? 80000));
-    setPairsCap(String(p.comp?.pairsBlockCap ?? 40000));
-    setSummaryCap(String(p.comp?.summaryCharsCap ?? 12000));
-    setMaxPairs(String(p.comp?.maxPairs ?? 8));
-    setReserva(String(p.reserva_tokens ?? 1024));
-    setSilencio(String(p.silencio_s ?? 0));
-    setContexto(String(p.contexto_tokens ?? 0));
-    setAtivo(p.configurado || p.ativo);
-    setGlobal(operador && p.origem === "global");
-    setChave("");
-    setTeste(null);
-    setFormPadraoAberto(true);
-  }
+  /* v3.60: a antiga linha "padrão da casa" saiu — todo provedor é uma linha da lista. */
 
-  function corpo(extra: Record<string, unknown> = {}) {
+ function corpo(extra: Record<string, unknown> = {}) {
     return {
       tipo,
       base_url: baseUrl,
@@ -289,7 +265,7 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
 
   function preencherNomeado(pr: Provedor) {
     setEditando(pr.nome);
-    setNovo({ nome: pr.nome, tipo: pr.tipo === "ollama" ? "ollama" : "openai", base_url: pr.base_url, chave: "", modelo: pr.modelo, paraTodos: pr.escopo === "*", escopoOrig: pr.escopo === "*" ? "global" : pr.escopo });
+    setNovo({ nome: pr.nome, tipo: pr.tipo === "ollama" ? "ollama" : "openai", base_url: pr.base_url, chave: "", modelo: pr.modelo, paraTodos: pr.escopo === "*", publico: pr.publico, padrao: pr.padrao, escopoOrig: pr.escopo === "*" ? "global" : pr.escopo });
     setFormNomeadoAberto(true);
   }
 
@@ -301,13 +277,15 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
         tipo: novo.tipo,
         base_url: novo.base_url.trim(),
         modelo: novo.modelo.trim(),
-        /* "serve para todos" = escopo global, como no provider da casa;
-           desmarcado = mantém o escopo original da linha (não vira "só do op") */
+        /* "conta do operador" = escopo global; desmarcado = mantém o escopo original da linha.
+           v3.60: quem vê é o `publico`, não o escopo. */
         tenant: novo.paraTodos ? "global" : novo.escopoOrig,
+        publico: novo.publico,
+        padrao: novo.padrao,
         ...(novo.chave ? { chave: novo.chave } : {}),
       });
       toast(editando ? "provedor atualizado" : "provedor cadastrado — descubra os modelos para o chat escolher", "sucesso");
-      setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, escopoOrig: "global" });
+      setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global" });
       setEditando(null);
       setFormNomeadoAberto(false);
       await carregar();
@@ -373,8 +351,35 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
     }
   }
 
+  /** v3.60 — alterna público/privado sem passar pelo formulário (é o interruptor do dono). */
+  async function alternarPublico(pr: Provedor) {
+    setRodando(pr.nome);
+    try {
+      await put("/provedores", {
+        nome: pr.nome,
+        tipo: pr.tipo,
+        base_url: pr.base_url,
+        modelo: pr.modelo,
+        chave: "***",
+        tenant: pr.escopo === "*" ? "global" : pr.escopo,
+        publico: !pr.publico,
+      });
+      toast(
+        pr.publico
+          ? `"${pr.nome}" agora é privado — só esta conta vê`
+          : `"${pr.nome}" agora é público — todas as contas veem e podem escolher`,
+        "sucesso",
+      );
+      await carregar();
+    } catch (e) {
+      toast("público/privado: " + (e as Error).message, "erro");
+    } finally {
+      setRodando(null);
+    }
+  }
+
   async function apagarNomeado(pr: Provedor) {
-    if (!confirm(`apagar o provedor "${pr.nome}"? as conversas voltam a usar o padrão da casa.`)) return;
+    if (!confirm(`apagar o provedor "${pr.nome}"? quem estava usando cai no provedor padrão (ou o chat some, se não houver outro).`)) return;
     setRodando(pr.nome);
     try {
       await del(`/provedores/${pr.id}`);
@@ -578,44 +583,25 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
           </tr>
         </thead>
         <tbody>
-          {/* linha 1: o padrão da casa (ex-provider do chat) — não se apaga, só edita */}
-          <tr id="prov-padrao">
-            <td>
-              <b className="mono">padrão da casa</b>
-              <span className="sub2 block">
-                {p?.configurado
-                  ? "responde quando o chat não escolhe outro"
-                  : "ainda não configurado — sem ele o Chat fica desligado"}
-              </span>
-            </td>
-            <td className="mono break-all">{p ? `${p.tipo === "ollama" ? "ollama" : "openai"} · ${p.base_url}` : "—"}</td>
-            <td className="mono break-all">{p?.modelo || "—"}</td>
-            <td>
-              {p?.configurado ? (
-                p.ativo ? (
-                  <span className="chip chip-verde">ativo</span>
-                ) : (
-                  <span className="chip">inativo</span>
-                )
-              ) : (
-                <span className="chip">sem config</span>
-              )}
-              {p?.tem_chave ? <span className="chip">{p.chave_mascarada}</span> : null}
-            </td>
-            {operador && (
-              <td className="text-right">
-                <button className="btn btn-mini" disabled={formPadraoAberto || ocupado} onClick={preencherPadrao}>
-                  {formPadraoAberto ? "editando…" : "editar"}
-                </button>
+          {/* v3.60 — a lista é UMA: todo provedor é uma linha, com público/privado e padrão.
+              O antigo "padrão da casa" foi migrado para uma linha normal (Clauricio). */}
+          {lista.length === 0 && (
+            <tr>
+              <td colSpan={5}>
+                <span className="sub2">
+                  nenhum provedor cadastrado — sem provedor visível para esta conta o chat não aparece
+                </span>
               </td>
-            )}
-          </tr>
-          {/* linhas 2..n: providers nomeados */}
+            </tr>
+          )}
           {lista.map((pr) => (
             <tr key={pr.id} id={"prov-" + pr.nome} className={pr.ativo ? "" : "op-60"}>
               <td>
                 <b className="mono">{pr.nome}</b>
-                <span className="sub2 block">{pr.escopo === "*" ? "serve para todos" : `escopo: ${pr.escopo}`}</span>
+                <span className="sub2 block">
+                  {pr.publico ? "público — todo mundo vê" : "privado — só quem é desta conta"} ·{" "}
+                  {pr.escopo === "*" ? "conta do operador" : `escopo: ${pr.escopo}`}
+                </span>
               </td>
               <td className="mono break-all">
                 {pr.tipo === "ollama" ? "ollama" : "openai"} · {pr.base_url}
@@ -631,6 +617,7 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
                 ) : (
                   <span className="chip">inativo</span>
                 )}
+                <span className="chip">{pr.publico ? "público" : "privado"}</span>
                 {pr.chave_mascarada ? <span className="chip">{pr.chave_mascarada}</span> : null}
               </td>
               {operador && (
@@ -643,6 +630,14 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
                       padrão
                     </button>
                   )}
+                  <button
+                    className="btn btn-mini ml-1"
+                    title={pr.publico ? "tornar privado (só esta conta vê)" : "tornar público (todos veem)"}
+                    disabled={rodando === pr.nome}
+                    onClick={() => void alternarPublico(pr)}
+                  >
+                    {pr.publico ? "tornar privado" : "tornar público"}
+                  </button>
                   <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => void alternar(pr)}>
                     {pr.ativo ? "desligar" : "ligar"}
                   </button>
@@ -806,13 +801,23 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
           <label className="check">
             <input id="provGlobal" type="checkbox" checked={novo.paraTodos}
               onChange={(e) => setNovo({ ...novo, paraTodos: e.target.checked })} />
-            servir para todos (global) — desmarcado, só o teu escopo usa
+            pertence à conta do operador (global) — desmarcado, fica no escopo desta conta
+          </label>
+          <label className="check">
+            <input id="provPublico" type="checkbox" checked={novo.publico}
+              onChange={(e) => setNovo({ ...novo, publico: e.target.checked })} />
+            público — qualquer conta vê e pode escolher no chat (desmarcado: privado, só quem é desta conta)
+          </label>
+          <label className="check">
+            <input id="provPadrao" type="checkbox" checked={novo.padrao}
+              onChange={(e) => setNovo({ ...novo, padrao: e.target.checked })} />
+            padrão — quem vê este provedor e não escolhe outro usa ele
           </label>
           <div>
             <button id="btnSalvarProvedor" className="btn" disabled={rodando === "form"} onClick={() => void salvarNomeado()}>
               {editando ? "salvar mudanças" : "cadastrar"}
             </button>
-            <button className="btn btn-mini ml-2" onClick={() => { setFormNomeadoAberto(false); setEditando(null); setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, escopoOrig: "global" }); }}>
+            <button className="btn btn-mini ml-2" onClick={() => { setFormNomeadoAberto(false); setEditando(null); setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global" }); }}>
               fechar
             </button>
           </div>

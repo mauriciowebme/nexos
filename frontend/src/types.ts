@@ -212,6 +212,10 @@ export type RemoverUsuarioResp = {
 
 export type ProviderResp = {
   configurado: boolean;
+  /** v3.60: provedor que está atendendo esta conta (quando há um) e as marcas dele */
+  servindo?: string | null;
+  publico?: boolean | null;
+  padrao_nome?: string | null;
   escopo: string | null;
   origem: "propria" | "global" | null;
   tem_global: boolean;
@@ -338,6 +342,8 @@ export type Provedor = {
   chave_mascarada: string;
   ativo: boolean;
   padrao: boolean;
+  /** v3.60: público = todos veem; privado = só o dono do escopo vê */
+  publico: boolean;
   escopo: string;
   modelos: string[];
   modelos_em: string | null;
