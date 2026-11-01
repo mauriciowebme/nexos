@@ -4264,9 +4264,19 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     s = corpo(r);
     f.check("v3.53 os.system bloqueado", s.saida === "NEGADO PermissionError", JSON.stringify(s).slice(0, 160));
 
-    r = await rpcPy("try:\n    import ctypes\n    ctypes.CDLL('libc.so.6')\n    print('ACESSOU')\nexcept Exception as e:\n    print('NEGADO', type(e).__name__)");
+    /* v3.63 — o cadeado do ctypes saiu: numpy/pandas/openpyxl precisam dele para carregar a
+       parte nativa. Quem protege agora é o kernel: escrita só nas pastas da conta (Landlock). */
+    r = await rpcPy("try:\n    import ctypes\n    ctypes.CDLL('libc.so.6')\n    print('LIBERADO')\nexcept Exception as e:\n    print('NEGADO', type(e).__name__)");
     s = corpo(r);
-    f.check("v3.53 ctypes bloqueado", s.saida === "NEGADO PermissionError", JSON.stringify(s).slice(0, 160));
+    f.check("v3.63 ctypes liberado (numpy/pandas importam)", s.saida === "LIBERADO", JSON.stringify(s).slice(0, 160));
+
+    r = await rpcPy("try:\n    open('/tmp/fora_da_conta.txt','w').write('x')\n    print('ESCREVEU')\nexcept Exception as e:\n    print('NEGADO', type(e).__name__)");
+    s = corpo(r);
+    f.check("v3.63 escrita fora da pasta da conta barrada pelo kernel", s.saida === "NEGADO PermissionError", JSON.stringify(s).slice(0, 160));
+
+    r = await rpcPy("try:\n    open('/root/.bashrc').read()\n    print('LEU')\nexcept Exception as e:\n    print('NEGADO', type(e).__name__)");
+    s = corpo(r);
+    f.check("v3.63 leitura fora da pasta da conta barrada", s.saida === "NEGADO PermissionError", JSON.stringify(s).slice(0, 160));
 
     r = await rpcPy("x=bytearray(900*1024*1024)\nprint('alocou')");
     s = corpo(r);
