@@ -1407,7 +1407,7 @@ test("nexos v2 — suíte completa", async (t) => {
       "res.end(JSON.stringify({jsonrpc:'2.0',id:j.id,error:{code:-32601,message:'metodo nao suportado'}}));});});",
       "s.listen(9912,'127.0.0.1');setTimeout(()=>process.exit(0),240000);",
     ].join("");
-    execFileSync("docker", ["exec", "-d", CONTAINER, "node", "-e", codProv]);
+    execFileSync("docker", ["exec", "-d", String(process.env.CONTAINER ?? ""), "node", "-e", codProv]);
     execFileSync("docker", ["exec", "-d", CONTAINER, "node", "-e", codMcp]);
     await dormir(1500);
 
@@ -4389,6 +4389,138 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.check("anexo não-imagem: 1 bloco de texto", c.length === 1 && c[0]?.type === "text", `len=${c.length} :: ${String(c[0]?.text ?? "").slice(0, 160)}`);
 
     f.fechar("v3.58");
+  });
+
+  /* v3.67 — o que o admin viveu em 02/11: script não conseguia entregar o Excel (bug do
+     parâmetro `nome` + falta de caminho de volta), o BCB aparecia "bloqueado" por URL errada
+     (http 400) e uma resposta vazia do provedor deixava a bolha em branco. */
+  await bloco(t, "v3.67: python entrega arquivo, parâmetro nome e erro http honesto", async () => {
+    const f = fiscal();
+    const rpcPy = (codigo: string) =>
+      call("POST", "/mcp", {
+        key: OPKEY,
+        corpo: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "rodar_python", arguments: { codigo } } },
+      });
+    const corpo = (r: any) => {
+      try {
+        return JSON.parse(r.json?.result?.content?.[0]?.text ?? "{}");
+      } catch {
+        return {};
+      }
+    };
+
+    /* 1. ferramenta com parâmetro `nome` dentro do script (era TypeError: multiple values) */
+    let r = await rpcPy("import nexos\ntry:\n    nexos.upload_file(nome='x.xlsx', conteudo_base64='')\nexcept TypeError as e:\n    print('TYPEOF', e)\nexcept Exception as e:\n    print('VALIDOU', str(e)[:80])");
+    let s = corpo(r);
+    f.check(
+      "v3.67 ferramenta com parâmetro 'nome' não estoura TypeError no script",
+      s.ok === true && !/multiple values/.test(String(s.saida)),
+      JSON.stringify(s).slice(0, 220),
+    );
+
+    /* 2. nexos.anexar entrega o arquivo criado pelo script como anexo (id + bytes) */
+    r = await rpcPy(
+      "import nexos\nopen('relatorio-v366.txt','w').write('linha-v366\\n'*40)\nmeta = nexos.anexar('relatorio-v366.txt')\nprint(meta['id'], meta['bytes'], meta['nome'])",
+    );
+    s = corpo(r);
+    const partes = String(s.saida ?? "").trim().split(" ");
+    const idAnexo = partes[0] ?? "";
+    f.check(
+      "v3.67 nexos.anexar devolve id, bytes e nome",
+      s.ok === true && /^[0-9a-f]{24}$/.test(idAnexo) && Number(partes[1]) === 440 && partes[2] === "relatorio-v366.txt",
+      JSON.stringify(s).slice(0, 240),
+    );
+
+    /* 3. o anexo baixa pelo GET /anexos/:id — é o que a bolha usa */
+    const baixado = await call("GET", `/anexos/${idAnexo}`, { key: OPKEY });
+    f.check(
+      "v3.67 o arquivo do python baixa na conversa (GET /anexos/:id)",
+      baixado.status === 200 && baixado.texto.startsWith("linha-v366") && baixado.texto.length === 440,
+      `${baixado.status} ${baixado.texto.slice(0, 40)}`,
+    );
+
+    /* 4. caminho fora da pasta da conta é recusado (Landlock é do script; isto é do anexo) */
+    r = await rpcPy("import nexos\ntry:\n    nexos.anexar('/etc/passwd')\n    print('ANEXOU')\nexcept Exception as e:\n    print('RECUSOU', str(e)[:60])");
+    s = corpo(r);
+    f.check(
+      "v3.67 anexar recusa caminho fora da pasta da conta",
+      /RECUSOU/.test(String(s.saida)) && /dentro da sua pasta|fora da sua pasta/.test(String(s.saida)),
+      JSON.stringify(s).slice(0, 200),
+    );
+
+    /* 5. a mensagem de http diz o status real: 400/404 não é bloqueio */
+    const msg404 = execFileSync(
+      "docker",
+      ["exec", String(process.env.CONTAINER ?? ""), "node", "-e", "const {mensagemHttp}=require('./dist/web.js');console.log(mensagemHttp(404));console.log(mensagemHttp(403));"],
+      { encoding: "utf8" },
+    ).trim().split("\n");
+    f.check(
+      "v3.67 http 404 fala 'url errada', não 'bloqueou o acesso'",
+      /http 404/.test(msg404[0] ?? "") && !/bloqueou/.test(msg404[0] ?? "") && /bloqueou/.test(msg404[1] ?? ""),
+      JSON.stringify(msg404),
+    );
+
+    /* 6 e 7. resposta VAZIA do provedor vira aviso, e o anexo do python chega na bolha */
+    const codProv = [
+      "const http=require('http');",
+      "const s=http.createServer((req,res)=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{",
+      "let j={};try{j=JSON.parse(b||'{}');}catch(e){}",
+      "res.setHeader('content-type','application/json');",
+      "const modelo=String(j.model||'');const m=j.messages||[];",
+      "const diz=(t)=>res.end(JSON.stringify({choices:[{message:{role:'assistant',content:t}}]}));",
+      "if(modelo==='vazio')return diz('');",
+      "if(modelo==='anexa'){",
+      "if(!m.some(x=>x.role==='tool')){const args=JSON.stringify({codigo:\"import nexos\\nopen('e2e-v366.txt','w').write('conteudo-e2e-366')\\nprint(nexos.anexar('e2e-v366.txt'))\"});",
+      "return res.end(JSON.stringify({choices:[{message:{role:'assistant',content:'GERANDO',tool_calls:[{id:'a1',type:'function',function:{name:'rodar_python',arguments:args}}]}}]}));}",
+      "return diz('ARQUIVO ENTREGUE');}",
+      "diz('ok');});});",
+      "s.listen(9916,'127.0.0.1');setTimeout(()=>process.exit(0),180000);",
+    ].join("");
+    execFileSync("docker", ["exec", "-d", String(process.env.CONTAINER ?? ""), "node", "-e", codProv]);
+    await dormir(1200);
+
+    const provedor = (modelo: string) =>
+      call("PUT", "/config/provider", {
+        key: OPKEY,
+        corpo: {
+          tipo: "litellm",
+          base_url: "http://127.0.0.1:9916/v1",
+          modelo,
+          temperatura: 0,
+          system_prompt: "",
+          mcp_interno: true,
+          max_rodadas: 3,
+          ativo: true,
+          global: true,
+          memoria_turnos: 0,
+        },
+      });
+
+    r = await provedor("vazio");
+    f.check("v3.67 provedor do teste salvo", r.status === 200, r.texto.slice(0, 120));
+    r = await call("POST", "/chat", { key: OPKEY, corpo: { pergunta: "oi", memoria: "teste-v366", provedor: undefined } });
+    f.check(
+      "v3.67 resposta vazia vira aviso na tela (não bolha em branco)",
+      r.status === 200 && /não devolveu resposta/.test(String(r.json?.resposta ?? "")) && /vazia/.test(String(r.json?.aviso ?? "")),
+      `${r.status} ${String(r.json?.resposta ?? "").slice(0, 90)} | aviso=${r.json?.aviso}`,
+    );
+
+    r = await provedor("anexa");
+    r = await call("POST", "/chat", { key: OPKEY, corpo: { pergunta: "gere o arquivo", memoria: "teste-v366" } });
+    const anexoChat = (r.json?.anexos ?? [])[0];
+    f.check(
+      "v3.67 arquivo que o python anexou aparece na resposta do chat",
+      r.status === 200 && anexoChat?.nome === "e2e-v366.txt" && Number(anexoChat?.bytes) === 16,
+      JSON.stringify({ status: r.status, anexos: r.json?.anexos, resposta: String(r.json?.resposta ?? "").slice(0, 60) }),
+    );
+
+    /* não deixar o padrão apontando para o fake nos blocos seguintes */
+    await call("PUT", "/config/provider", {
+      key: OPKEY,
+      corpo: { tipo: "litellm", base_url: "http://127.0.0.1:1/v1", modelo: "", ativo: false, global: true },
+    });
+
+    f.fechar("v3.67");
   });
 
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {
