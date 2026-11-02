@@ -29,13 +29,14 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, appendFile, chmod, chown, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, chmod, chown, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { promisify } from "node:util";
 import type { Usuario } from "./config";
 import { log } from "./config";
+import { criarAnexo, type AnexoMeta } from "./anexos";
 import { subirProxy, type DestinoProxy } from "./sandbox_proxy";
 
 const rodar = promisify(execFile);
@@ -50,6 +51,8 @@ const TETO_SAIDA = 120_000;
 const TETO_SEG = 120;
 /** Teto de memória do processo Python (endereço virtual). */
 const TETO_MEM_MB = Number(process.env.NEXOS_SANDBOX_MEM_MB ?? 512);
+/** Teto do arquivo que o script entrega na conversa por `nexos.anexar` (vai lido em memória). */
+const TETO_ANEXO_PY = 64 * 1024 * 1024;
 
 export type ChamadaFerramenta = { ferramenta: string; ok: boolean; ms: number };
 
@@ -66,6 +69,10 @@ export type ResultadoPython = {
   instalados: string[];
   pasta: string;
   uso_mb: number;
+  /** v3.67 — primeiro arquivo entregue por `nexos.anexar(...)`: vai para a bolha como anexo. */
+  anexo?: AnexoMeta;
+  /** todos os arquivos anexados neste script (o chat mostra o primeiro; os demais ficam registrados) */
+  anexos?: AnexoMeta[];
 };
 
 const escapar = (s: string): string => JSON.stringify(s);
@@ -99,16 +106,23 @@ _pedidos = _os.fdopen(3, "w", buffering=1, encoding="utf-8")
 _respostas = _sys.stdin
 
 
-def _chamar(nome, **args):
-    _pedidos.write(_json.dumps({"tool": nome, "args": args}, ensure_ascii=False) + "\\n")
+def _chamar(_tool, **args):
+    _pedidos.write(_json.dumps({"tool": _tool, "args": args}, ensure_ascii=False) + "\\n")
     _pedidos.flush()
     linha = _respostas.readline()
     if not linha:
         raise RuntimeError("a ponte com o nexos caiu (o servidor encerrou a execucao)")
     r = _json.loads(linha)
     if not r.get("ok"):
-        raise RuntimeError(r.get("erro") or ("falha em " + nome))
+        raise RuntimeError(r.get("erro") or ("falha em " + _tool))
     return r.get("resultado")
+
+
+def anexar(caminho):
+    """Entrega ao usuario um arquivo que o script criou (ex: "scripts/saida/planilha.xlsx").
+    O arquivo aparece na conversa como anexo baixavel; use depois enviar_para_maquina se
+    a pessoa pedir para mandar para uma maquina. Devolve {"id","nome","bytes"}."""
+    return _chamar("__anexar", caminho=str(caminho))
 
 
 def ferramentas():
@@ -449,6 +463,39 @@ async function garantirDependencias(base: string, venv: string, pedidos: string[
 }
 
 /**
+ * v3.67 — `nexos.anexar(caminho)` dentro do script.
+ *
+ * O arquivo mora na pasta da conta (scripts/saida ou home) e precisa continuar lá: o caminho
+ * é resolvido e conferido contra a raiz ANTES de qualquer leitura, e o realpath pega o caso do
+ * symlink que aponta para fora. Sem isso um script poderia anexar /etc/shadow ao chat.
+ */
+async function anexarDoScript(caminhoBruto: string, base: string, user: Usuario): Promise<AnexoMeta> {
+  const rel = String(caminhoBruto ?? "").trim();
+  if (!rel) throw new Error("anexar: informe o caminho do arquivo (ex: scripts/saida/planilha.xlsx)");
+  if (rel.includes("\0")) throw new Error("anexar: caminho invalido");
+  const raiz = path.resolve(base) + path.sep;
+  /* o script roda com cwd = scripts/saida, então "planilha.xlsx" e "scripts/saida/planilha.xlsx"
+     precisam dar no mesmo arquivo — testa os dois e fica com o que existe. */
+  const candidatos = [path.resolve(base, rel), path.resolve(base, "scripts", "saida", rel)];
+  let real = "";
+  for (const c of candidatos) {
+    if (!c.startsWith(raiz)) continue;
+    const achado = await realpath(c).catch(() => "");
+    if (achado) { real = achado; break; }
+  }
+  if (!real) throw new Error("anexar: nao achei esse arquivo dentro da sua pasta (ex: scripts/saida/planilha.xlsx)");
+  if (!real.startsWith(raiz)) throw new Error("anexar: caminho fora da sua pasta");
+  const st = await stat(real).catch(() => null);
+  if (!st?.isFile()) throw new Error("anexar: nao achei esse arquivo (ou nao e um arquivo)");
+  if (st.size > TETO_ANEXO_PY)
+    throw new Error(
+      `anexar: arquivo de ${(st.size / 1048576).toFixed(1)} MB passa do teto de ${TETO_ANEXO_PY / 1048576} MB para anexo no chat — use enviar_para_maquina`,
+    );
+  const dados = await readFile(real);
+  return criarAnexo(user, dados, { nome: path.basename(real), host: "servidor" });
+}
+
+/**
  * Roda um script Python na pasta do usuário, com as ferramentas do nexos como funções.
  * `user` é quem pediu: toda chamada de ferramenta passa por `chamarToolInterna` com ele.
  */
@@ -542,6 +589,8 @@ export async function rodarPython(
   });
 
   const chamadas: ChamadaFerramenta[] = [];
+  /** v3.67: arquivos que o script entregou por `nexos.anexar` — vão para a bolha da conversa. */
+  const anexosSaida: AnexoMeta[] = [];
   let texto = "";
   let erro = "";
   let truncado = false;
@@ -573,11 +622,17 @@ export async function rodarPython(
         nome = String(pedido.tool ?? "");
         if (!nome) throw new Error("pedido sem 'tool'");
         const args = (pedido.args ?? {}) as Record<string, unknown>;
-        const r = await chamarToolInterna(nome, args, user);
-        chamadas.push({ ferramenta: nome, ok: true, ms: Date.now() - t0 });
+        /* v3.67: `anexar` não é tool do MCP — é o caminho de volta do arquivo para a conversa. */
+        const rotulo = nome === "__anexar" ? "anexar" : nome;
+        const r =
+          nome === "__anexar"
+            ? await anexarDoScript(String(args.caminho ?? ""), base, user)
+            : await chamarToolInterna(nome, args, user);
+        if (nome === "__anexar") anexosSaida.push(r as AnexoMeta);
+        chamadas.push({ ferramenta: rotulo, ok: true, ms: Date.now() - t0 });
         filho.stdin?.write(JSON.stringify({ ok: true, resultado: r }) + "\n");
       } catch (e) {
-        chamadas.push({ ferramenta: nome, ok: false, ms: Date.now() - t0 });
+        chamadas.push({ ferramenta: nome === "__anexar" ? "anexar" : nome, ok: false, ms: Date.now() - t0 });
         filho.stdin?.write(JSON.stringify({ ok: false, erro: String((e as Error).message ?? e) }) + "\n");
       }
     })();
@@ -616,5 +671,6 @@ export async function rodarPython(
     instalados,
     pasta: `usuarios/${pastaDe(user.tenant)}/scripts/saida`,
     uso_mb: await usoMb(base),
+    ...(anexosSaida.length ? { anexo: anexosSaida[0], anexos: anexosSaida } : {}),
   };
 }
