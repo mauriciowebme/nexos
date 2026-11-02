@@ -1,6 +1,6 @@
 # Próximos passos — Nexos
 
-> **Última atualização:** 2026-11-02 · **Versão:** 3.66.0 · **Dono:** Mauricio
+> **Última atualização:** 2026-11-02 · **Versão:** 3.67.0 · **Dono:** Mauricio
 
 Este arquivo tem **só o que está em aberto** — as tarefas entregues foram removidas na limpeza de
 30/10 (o histórico fica no `git log`). Execução de qualquer T### exige OK explícito do Mauricio.
@@ -16,6 +16,7 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 
 | Versão | O que corrigiu | Como foi achado |
 |---|---|---|
+| 3.67.0 | **O Python do operador não conseguia entregar arquivo ao usuário.** Três defeitos medidos no chat do admin: (1) o `_chamar` da ponte tinha um parâmetro chamado `nome` e colidia com ferramentas que também têm `nome` — `nexos.upload_file(nome=…)`, `list_jobs`, `listar_usuarios`, `apagar_usuario` e `listar_mcp` estouravam `TypeError: got multiple values`; (2) não existia caminho de volta: o script gerava a planilha e o único upload ia para o **RAG** (o Excel do admin virou documento, não anexo baixável) — agora `nexos.anexar("scripts/saida/arquivo")` entrega o arquivo na conversa, com o caminho preso à pasta da conta; (3) `web_open` chamava **todo** status ≥ 400 de "a página bloqueou o acesso", então uma URL de API errada (http 400 no BCB) fazia o modelo abandonar a fonte certa e vagar por scraping, brapi e yfinance — agora a mensagem diz o status real (400/404 = endereço errado, 401/403/429 = bloqueio) e não gasta 30 s com o navegador em URL inexistente. Também: resposta **vazia** do provedor virou aviso na tela ("o modelo não devolveu resposta — tentar de novo") em vez de bolha em branco. | Dono pediu para analisar a conversa do usuário `admin`: 19 chamadas e 19,9 min para gerar um Excel, terminando com o modelo explicando um bug interno na resposta; e o "oi" voltou com 0 caractere. |
 | 3.66.0 | No celular a barra do topo do chat ficava **colada na borda de cima**: a regra de largura estreita definia `px-3` e `pb-2`, mas nenhum `padding-top`, e como o chat ocupa a tela toda (`100dvh`) com o `.chat-janela` tratando só a área segura de BAIXO, os botões ☰/⚙/nova conversa encostavam no limite da tela — num aparelho real ficariam sob a barra de status/notch. Agora a barra tem 10px de respiro somados a `env(safe-area-inset-top)`. | Print do dono no modo celular: "os botões colados no topo sem espaçamento nenhum". |
 | 3.65.0 | O painel era servido **sem instrução de cache**: sem `cache-control`, o navegador guardava o `index.html` por conta própria e o celular continuava rodando o pacote antigo depois do deploy — uma correção publicada parecia não ter entrado. Agora o HTML vai com `no-cache, must-revalidate` (sempre revalida) e os arquivos com hash no nome (JS/CSS) vão com `max-age` de um ano e `immutable`. | Dono relatou comportamento de versão anterior depois da 3.62 (botão de parar vermelho com texto no campo) — o código novo estava certo no bundle, mas o aparelho servia o pacote velho. |
 
