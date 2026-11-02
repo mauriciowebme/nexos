@@ -1,6 +1,6 @@
 # Próximos passos — Nexos
 
-> **Última atualização:** 2026-10-31 · **Versão:** 3.63.0 · **Dono:** Mauricio
+> **Última atualização:** 2026-10-31 · **Versão:** 3.64.0 · **Dono:** Mauricio
 
 Este arquivo tem **só o que está em aberto** — as tarefas entregues foram removidas na limpeza de
 30/10 (o histórico fica no `git log`). Execução de qualquer T### exige OK explícito do Mauricio.
@@ -16,6 +16,8 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 
 | Versão | O que corrigiu | Como foi achado |
 |---|---|---|
+| 3.64.0 | A tela ficava **"trabalhando em segundo plano" para sempre** quando o fim da resposta não fechava a conexão (o proxy pode segurar o fim do fluxo): a resposta aparecia, o botão de parar continuava aceso e a caixa seguia travada. Agora o aviso de fim encerra a leitura na hora, sem esperar o servidor fechar, e um vigia de 120 segundos sem nenhum sinal reata a tarefa em vez de ficar pendurado. Medido no navegador com um fluxo que manda o fim e **não fecha**: a resposta aparece e o estado volta ao normal (botão de enviar, sem "trabalhando"). | Print do dono: resposta pronta com "· trabalhando em segundo plano" e botão vermelho aceso. |
+
 | 3.63.0 | A ferramenta de Python do nexos quebrava nas bibliotecas de dados: `numpy`, `pandas` e `openpyxl` morriam na importação com `PermissionError: ctypes bloqueado no sandbox` (o numpy usa `ctypes` para carregar a parte nativa). O bloqueio saiu do Python e foi para o kernel: **Landlock** limita o disco à pasta da conta (escrita só nas pastas do usuário e no diretório do script; leitura do sistema) e **seccomp** recusa exec, ptrace e troca de namespace. Medido: numpy 2.5.4, pandas 3.1.0 e openpyxl 3.1.5 rodando; escrita fora da pasta e leitura de `/root` barradas; `web_search` pelo proxy intacto. | Dono: "a ferramenta de Python acho que não funciona corretamente". |
 
 | 3.62.0 | Durante a resposta, o botão do rodapé era sempre o **parar**: quem digitava no meio do rastro e tocava nele matava o turno com a mensagem ainda no campo (o Enter funcionava, o toque não). Agora o botão obedece ao campo: **com texto digitado ele envia** — a fala entra no meio do rastro e o turno continua — e **com o campo vazio ele é o parar**, como antes. Medido em 390px: com texto o botão vira a seta (título "mandar agora, no meio da resposta") e o toque fez a fala entrar no rastro sem parar a resposta; ao enviar, o campo esvazia e o botão volta ao quadrado. | Dono: "não consigo mais mandar mensagem no meio de um rastro de turno". |
