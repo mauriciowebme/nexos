@@ -157,13 +157,36 @@ export async function postStream(caminho: string, corpo: unknown, onEvento: (e: 
 }
 
 /** GET que lê um fluxo de eventos (SSE) — v3.3: stream reanexável da tarefa.
- *  `EventSource` não serve: ele não manda o header Authorization. */
+ *  `EventSource` não serve: ele não manda o header Authorization.
+ *
+ *  v3.64 — vigia de silêncio: se o fluxo ficar 120 s sem entregar NADA (proxy engoliu a
+ *  conexão, rede mudou de torre), aborta e devolve o controle para `bombearTarefa`, que
+ *  consulta o status da tarefa e reata — em vez de a tela ficar "trabalhando" para sempre. */
 export async function getStream(caminho: string, onEvento: (e: any) => void): Promise<void> {
-  const r = await fetch(caminho, { headers: cabecalhos(false) });
-  await lerSse(r, onEvento);
+  const ctl = new AbortController();
+  let vigia: ReturnType<typeof setTimeout> | null = null;
+  const armar = (): void => {
+    if (vigia) clearTimeout(vigia);
+    vigia = setTimeout(() => ctl.abort(), 120_000);
+  };
+  armar();
+  try {
+    const r = await fetch(caminho, { headers: cabecalhos(false), signal: ctl.signal });
+    await lerSse(r, (e) => {
+      armar();
+      onEvento(e);
+    });
+  } finally {
+    if (vigia) clearTimeout(vigia);
+  }
 }
 
-/** miolo comum dos dois fluxos: valida, lê `data:` por bloco até o servidor fechar. */
+/** miolo comum dos dois fluxos: valida, lê `data:` por bloco até o fim do turno.
+ *
+ *  v3.64 — o `fim` (ou `erro`) encerra a leitura na hora, com `cancel()`: antes a função só
+ *  retornava quando o servidor FECHAVA a conexão, e atrás do proxy (Caddy) o fecho podia não
+ *  chegar — a resposta aparecia na tela e o app continuava "trabalhando em segundo plano",
+ *  com o botão de parar aceso, para sempre. */
 async function lerSse(r: Response, onEvento: (e: any) => void): Promise<void> {
   if (!r.ok) {
     let detalhe = `${r.status} ${r.statusText}`;
@@ -188,10 +211,21 @@ async function lerSse(r: Response, onEvento: (e: any) => void): Promise<void> {
     for (const bloco of blocos) {
       const linha = bloco.split("\n").find((l) => l.startsWith("data:"));
       if (!linha) continue;
+      let evento: { tipo?: string } | null = null;
       try {
-        onEvento(JSON.parse(linha.slice(5).trim()));
+        evento = JSON.parse(linha.slice(5).trim());
       } catch {
-        /* comentário de manutenção (: ping) ou payload quebrado */
+        continue; /* comentário de manutenção (: ping) ou payload quebrado */
+      }
+      onEvento(evento);
+      if (evento?.tipo === "fim" || evento?.tipo === "erro") {
+        /* turno acabou: solta a conexão sem esperar o EOF do proxy */
+        try {
+          await leitor.cancel();
+        } catch {
+          /* já fechada */
+        }
+        return;
       }
     }
   }
