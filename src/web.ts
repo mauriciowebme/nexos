@@ -316,6 +316,28 @@ export async function baixarImagem(
 /** web_open: baixa a página e devolve texto limpo. Bloqueia endereço interno. */
 const POUCO_TEXTO = 250;
 
+/* v3.67 — a mensagem de erro diz o que o servidor respondeu de verdade.
+ * Antes, TODO status >= 400 virava "a pagina bloqueou o acesso", então uma URL de API
+ * errada (http 400) fazia o modelo concluir que a fonte estava bloqueada e sair vagando
+ * por outros sites. Medido no chat do admin em 02/11: BCB "bloqueado" com a URL errada. */
+export function mensagemHttp(status: number): string {
+  if (status === 400 || status === 404 || status === 410 || status === 422) {
+    return `o endereco respondeu http ${status} — a URL parece errada ou o conteudo nao existe (isto NAO e bloqueio): confira o caminho da pagina/API e tente a URL correta`;
+  }
+  if (status === 401 || status === 403 || status === 429) {
+    return `a pagina bloqueou o acesso (http ${status}) — nem o navegador passou; procure a informacao em outra fonte ou em outro endereco`;
+  }
+  if (status >= 500) {
+    return `o site respondeu http ${status} (instabilidade do servidor deles) — tente de novo em instantes`;
+  }
+  return `a pagina respondeu http ${status}`;
+}
+
+/** status que não melhora com navegador: é endereço errado, não bloqueio de robô */
+function urlErrada(status: number): boolean {
+  return status === 400 || status === 404 || status === 410 || status === 422;
+}
+
 export async function abrirPagina(
   urlBruta: string,
   opcoes: { js?: boolean } = {},
@@ -336,7 +358,7 @@ export async function abrirPagina(
    * tem outra impressão digital e muitas vezes passa. Então o erro fica guardado e quem
    * decide é o resultado do chromium (quando disponível). */
   const bloqueado = r.status >= 400;
-  if (bloqueado && process.env.NEXOS_NAVEGADOR === "0") throw new Error(`a pagina respondeu http ${r.status}`);
+  if (bloqueado && process.env.NEXOS_NAVEGADOR === "0") throw new Error(mensagemHttp(r.status));
   const tipo = r.ct.toLowerCase();
   if (tipo && !/text\/|html|xml|json/.test(tipo)) {
     throw new Error(`conteudo nao textual (${tipo}) — web_open le paginas, nao arquivos`);
@@ -351,8 +373,10 @@ export async function abrirPagina(
    * pouco texto. Página pequena e simples (ex.: example.com, 577 bytes) NÃO paga o
    * navegador: só renderiza com js:true, ou quando o HTML tem corpo para uma SPA. */
   const sinalDeJs = /id=["'](root|app|__next)["']|__NEXT_DATA__|window\.__(NUXT|INITIAL_STATE)/i.test(r.texto);
+  /* v3.67: 400/404 não é bloqueio — o navegador não vai transformar URL errada em conteúdo,
+     e esperar por ele custava 30 s (medido: série inexistente do BCB pendurou o turno). */
   const valeRenderizar =
-    bloqueado || opcoes.js === true || texto.length < POUCO_TEXTO || (texto.length < 900 && sinalDeJs);
+    (bloqueado && !urlErrada(r.status)) || opcoes.js === true || texto.length < POUCO_TEXTO || (texto.length < 900 && sinalDeJs);
   const htmlGordo = r.bytes > 3000;
   if (valeRenderizar && (htmlGordo || bloqueado) && process.env.NEXOS_NAVEGADOR !== "0") {
     try {
@@ -363,7 +387,7 @@ export async function abrirPagina(
       }
     } catch (e) {
       if (opcoes.js === true && !bloqueado) throw new Error(`nao consegui renderizar a pagina: ${(e as Error).message}`);
-      if (bloqueado) throw new Error(`a pagina respondeu http ${r.status} e o navegador tambem nao passou`);
+      if (bloqueado) throw new Error(`${mensagemHttp(r.status)} (o navegador tambem tentou e nao passou)`);
       /* sem navegador: devolve o que o curl trouxe, e o texto vazio fala por si */
     }
   }
@@ -372,7 +396,7 @@ export async function abrirPagina(
    * Medido: invest·ing e UOL devolvem 403/“Access Denied” para IP de datacenter em curl E
    * no chromium, por mais tempo que se espere. */
   if (bloqueado && texto.length < 200) {
-    throw new Error(`a pagina bloqueou o acesso (http ${r.status}) — nem o navegador passou; procure a informacao em outra fonte`);
+    throw new Error(mensagemHttp(r.status));
   }
 
   const truncado = texto.length > MAX_TEXTO;
