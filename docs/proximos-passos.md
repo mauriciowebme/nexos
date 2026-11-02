@@ -1,6 +1,6 @@
 # Próximos passos — Nexos
 
-> **Última atualização:** 2026-10-31 · **Versão:** 3.65.0 · **Dono:** Mauricio
+> **Última atualização:** 2026-11-02 · **Versão:** 3.66.0 · **Dono:** Mauricio
 
 Este arquivo tem **só o que está em aberto** — as tarefas entregues foram removidas na limpeza de
 30/10 (o histórico fica no `git log`). Execução de qualquer T### exige OK explícito do Mauricio.
@@ -16,6 +16,7 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 
 | Versão | O que corrigiu | Como foi achado |
 |---|---|---|
+| 3.66.0 | No celular a barra do topo do chat ficava **colada na borda de cima**: a regra de largura estreita definia `px-3` e `pb-2`, mas nenhum `padding-top`, e como o chat ocupa a tela toda (`100dvh`) com o `.chat-janela` tratando só a área segura de BAIXO, os botões ☰/⚙/nova conversa encostavam no limite da tela — num aparelho real ficariam sob a barra de status/notch. Agora a barra tem 10px de respiro somados a `env(safe-area-inset-top)`. | Print do dono no modo celular: "os botões colados no topo sem espaçamento nenhum". |
 | 3.65.0 | O painel era servido **sem instrução de cache**: sem `cache-control`, o navegador guardava o `index.html` por conta própria e o celular continuava rodando o pacote antigo depois do deploy — uma correção publicada parecia não ter entrado. Agora o HTML vai com `no-cache, must-revalidate` (sempre revalida) e os arquivos com hash no nome (JS/CSS) vão com `max-age` de um ano e `immutable`. | Dono relatou comportamento de versão anterior depois da 3.62 (botão de parar vermelho com texto no campo) — o código novo estava certo no bundle, mas o aparelho servia o pacote velho. |
 
 | 3.64.0 | A tela ficava **"trabalhando em segundo plano" para sempre** quando o fim da resposta não fechava a conexão (o proxy pode segurar o fim do fluxo): a resposta aparecia, o botão de parar continuava aceso e a caixa seguia travada. Agora o aviso de fim encerra a leitura na hora, sem esperar o servidor fechar, e um vigia de 120 segundos sem nenhum sinal reata a tarefa em vez de ficar pendurado. Medido no navegador com um fluxo que manda o fim e **não fecha**: a resposta aparece e o estado volta ao normal (botão de enviar, sem "trabalhando"). | Print do dono: resposta pronta com "· trabalhando em segundo plano" e botão vermelho aceso. |
