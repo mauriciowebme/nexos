@@ -347,11 +347,17 @@
   .toast-neutro {
     @apply border-bordaforte bg-sup3 text-txt;
   }
+  /* v3.67.1 — fundo OPAco nos avisos: as variantes usavam --verde-suave/
+     --vermelho-suave (12% de opacidade) e o toast sobreposto a qualquer
+     elemento deixava o texto de trás atravessar (medido no print do dono:
+     "conversa antiga" legível ATRAVÉS do aviso verde). Os hex abaixo são a
+     MESMA cor do translúcido misturada sobre --sup — visual idêntico, só
+     que tapa o que passa por baixo. */
   .toast-sucesso {
-    @apply border-[rgba(63,185,80,.35)] bg-[color:var(--verde-suave)] text-verde-claro;
+    @apply border-[rgba(63,185,80,.35)] bg-[#172922] text-verde-claro;
   }
   .toast-erro {
-    @apply border-[rgba(248,81,73,.35)] bg-[color:var(--vermelho-suave)] text-vermelho;
+    @apply border-[rgba(248,81,73,.35)] bg-[#2d1c21] text-vermelho;
   }
   .toast-x {
     @apply grid h-6 w-6 flex-none cursor-pointer place-items-center rounded-md opacity-60
