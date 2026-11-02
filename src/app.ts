@@ -231,6 +231,10 @@ export function criarApp(): FastifyInstance {
     return reply
       .code(200)
       .header("content-type", "text/html; charset=utf-8")
+      /* v3.65 — o HTML manda na versão: sem cache-control o navegador guardava o index
+         por heurística e o celular continuava rodando o pacote antigo depois do deploy
+         (foi assim que uma correção publicada pareceu não ter entrado). */
+      .header("cache-control", "no-cache, must-revalidate")
       .send(fs.createReadStream(arquivo));
   });
 
@@ -1420,9 +1424,12 @@ export function criarApp(): FastifyInstance {
       if (!fs.existsSync(arquivo)) return reply.code(404).send({ detail: "Not Found" });
     }
     const ext = path.extname(arquivo).toLowerCase();
+    /* v3.65 — HTML sempre revalida; asset com hash no nome pode ficar para sempre. */
+    const cache = path.basename(arquivo) === "index.html" ? "no-cache, must-revalidate" : "public, max-age=31536000, immutable";
     return reply
       .code(200)
       .header("content-type", tipos[ext] ?? "application/octet-stream")
+      .header("cache-control", cache)
       .send(fs.createReadStream(arquivo));
   });
 
