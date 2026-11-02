@@ -11,7 +11,7 @@ import type {
   TesteMcpResp,
 } from "../types";
 
-export type Aba = "provider" | "ferramentas" | "conta" | "limites" | "esquecimento" | "sistema";
+export type Aba = "provider" | "comportamento" | "ferramentas" | "conta" | "limites" | "esquecimento" | "sistema";
 
 /* v3.19.1: as seções vivem aqui, mas o MENU PRINCIPAL também as conhece —
    o item "Configurações" abre submenu com estas mesmas entradas (política do
@@ -20,6 +20,7 @@ export type Aba = "provider" | "ferramentas" | "conta" | "limites" | "esquecimen
    provider único com tabela (a linha 1 é o padrão da casa). */
 export const SECOES_CFG: [Aba, string][] = [
   ["provider", "Providers"],
+  ["comportamento", "Comportamento do agente"],
   ["ferramentas", "Ferramentas (MCP)"],
   ["conta", "Conta e chave"],
   ["limites", "Limites"],
@@ -33,7 +34,6 @@ export function Config({
   operador,
   tenant,
   onChaveNova,
-  onIrPainel,
   onControleMaquinas,
   aba,
 }: {
@@ -41,13 +41,15 @@ export function Config({
   operador: boolean;
   tenant: string;
   onChaveNova: (chave: string) => void;
-  onIrPainel: () => void;
+  /** v3.69: o atalho "ver no painel" saiu de Providers; o App continua passando — mantido no contrato */
+  onIrPainel?: () => void;
   onControleMaquinas?: (v: boolean) => void;
   aba: Aba;
 }) {
   const SECOES = SECOES_CFG;
   const CORPO: Record<Aba, import("react").ReactNode> = {
-    provider: <Provider operador={operador} tenant={tenant} onIrPainel={onIrPainel} />,
+    provider: <Provider operador={operador} />,
+    comportamento: <Comportamento operador={operador} tenant={tenant} />,
     ferramentas: <Ferramentas operador={operador} tenant={tenant} onControleMaquinas={onControleMaquinas} />,
     conta: <Conta nome={nome} operador={operador} onChaveNova={onChaveNova} />,
     limites: <Limites />,
@@ -76,37 +78,12 @@ export function Config({
  *  providers nomeados; o form de cada linha abre aqui embaixo. O que era
  *  "Provider do chat" virou o form da linha padrão; o que era "Provedores
  *  nomeados" virou as demais linhas. No chat o usuário escolhe provider+modelo. */
-function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant: string; onIrPainel: () => void }) {
+/* v3.69 (pedido do dono): a tela de Providers fala SÓ do serviço (URL, chave, modelo,
+   público/padrão). Instruções, rodadas, memória e compactação — o COMPORTAMENTO — moram
+   na seção própria (Comportamento), da CONTA, valendo para todos os provedores. */
+function Provider({ operador }: { operador: boolean }) {
   const { toast } = useToast();
-  const [p, setP] = useState<ProviderResp | null>(null);
   const [lista, setLista] = useState<Provedor[]>([]);
-  /* form da linha "padrão da casa" */
-  const [formPadraoAberto, setFormPadraoAberto] = useState(false);
-  const [tipo, setTipo] = useState<"openai" | "ollama">("openai");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [modelo, setModelo] = useState("");
-  const [chave, setChave] = useState("");
-  const [temperatura, setTemperatura] = useState("0.2");
-  const [prompt, setPrompt] = useState("");
-  const [rodadas, setRodadas] = useState("5");
-  const [memoria, setMemoria] = useState("12");
-  const [verbatim, setVerbatim] = useState("20");
-  /* v3.56 — compactação com a mecânica do mini-compress (gatilho + tetos das partes A/B/C) */
-  const [thresholdK, setThresholdK] = useState("200");
-  const [percentual, setPercentual] = useState("90");
-  const [tailCap, setTailCap] = useState("80000");
-  const [pairsCap, setPairsCap] = useState("40000");
-  const [summaryCap, setSummaryCap] = useState("12000");
-  const [maxPairs, setMaxPairs] = useState("8");
-  const [reserva, setReserva] = useState("1024");
-  /* v3.2: o tempo que o modelo pode ficar SEM ESCREVER nada antes de eu desistir (0 = padrão 180s).
-     Não é limite de duração da resposta: resposta longa que não para de escrever tem todo o tempo. */
-  const [silencio, setSilencio] = useState("0");
-  const [contexto, setContexto] = useState("0");
-  const [ativo, setAtivo] = useState(false);
-  const [global, setGlobal] = useState(false);
-  const [teste, setTeste] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [ocupado, setOcupado] = useState(false);
   /* form dos providers nomeados (novo ou edição) */
   const [novo, setNovo] = useState({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global" });
   const [editando, setEditando] = useState<string | null>(null);
@@ -114,154 +91,27 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
   const [rodando, setRodando] = useState<string | null>(null);
 
   const carregar = useCallback(async () => {
-    const [rProv, rLista] = await Promise.allSettled([
-      get<ProviderResp>("/config/provider" + (operador && tenant ? "?" + qs({ tenant }) : "")),
-      get<{ provedores: Provedor[] }>("/provedores"),
-    ]);
-    if (rProv.status === "fulfilled") {
-      const r = rProv.value;
-      setP(r);
-      /* v3.35.1: o cartão das instruções mostra o que o SERVIDOR tem, não o que sobrou de um
-         clique anterior. Antes, o estado do campo só nascia dentro do form do provider — com o
-         campo fora dali (v3.35), a tela abria vazia mesmo com texto gravado. */
-      setPrompt(r.system_prompt ?? "");
-      /* v3.55: comportamento do agente é da CONTA — o card abre preenchido mesmo com o form fechado */
-      setRodadas(String(r.max_rodadas));
-      setMemoria(String(r.memoria_turnos ?? 12));
-      setVerbatim(String(r.verbatim_turnos ?? 20));
-      setThresholdK(String(r.comp?.thresholdK ?? 200));
-      setPercentual(String(r.comp?.percentualJanela ?? 90));
-      setTailCap(String(r.comp?.tailCharsCap ?? 80000));
-      setPairsCap(String(r.comp?.pairsBlockCap ?? 40000));
-      setSummaryCap(String(r.comp?.summaryCharsCap ?? 12000));
-      setMaxPairs(String(r.comp?.maxPairs ?? 8));
-      /* se o form do padrão estiver aberto, sincroniza com o que voltou do servidor */
-      if (formPadraoAberto) {
-        setTipo(r.tipo === "ollama" ? "ollama" : "openai");
-        setBaseUrl(r.base_url);
-        setModelo(r.modelo);
-        setTemperatura(String(r.temperatura));
-        setReserva(String(r.reserva_tokens ?? 1024));
-        setSilencio(String(r.silencio_s ?? 0));
-        setContexto(String(r.contexto_tokens ?? 0));
-        setAtivo(r.configurado || r.ativo);
-        setChave("");
-      }
-    } else {
-      toast("provider: " + (rProv.reason as Error).message, "erro");
+    /* v3.69: Providers fala SÓ do serviço — o comportamento (instruções, rodadas,
+       compactação) saiu para a seção própria; aqui só a lista de linhas. */
+    try {
+      const r = await get<{ provedores: Provedor[] }>("/provedores");
+      setLista(r.provedores);
+    } catch (e) {
+      toast("provedores: " + (e as Error).message, "erro");
     }
-    if (rLista.status === "fulfilled") setLista(rLista.value.provedores);
-    /* o chat precisa da lista mesmo se o config falhar; falha dela não derruba a tela */
-  }, [operador, tenant, toast, formPadraoAberto]);
+  }, [toast]);
 
   useEffect(() => {
     void carregar();
   }, [carregar]);
 
-  /* v3.60: a antiga linha "padrão da casa" saiu — todo provedor é uma linha da lista. */
+  /* v3.60: a antiga linha "padrão da casa" saiu — todo provedor é uma linha da lista.
+     v3.69: o formulário antigo (legado de provider_config) também saiu da tela: o
+     comportamento do agente vive na seção Comportamento, e o serviço em cada linha. */
 
- function corpo(extra: Record<string, unknown> = {}) {
-    return {
-      tipo,
-      base_url: baseUrl,
-      modelo,
-      temperatura: Number(temperatura),
-      /* v3.55: max_rodadas, memoria_turnos e verbatim_turnos saíram daqui — são da conta e vão
-         pelo PUT /config/instrucoes. O backend preserva o valor anterior quando o campo não vem. */
-      reserva_tokens: Number(reserva),
-      silencio_s: Number(silencio),
-      contexto_tokens: Number(contexto),
-      /* para onde este corpo vai: o painel está MOSTRANDO o cliente selecionado, então é nele
-         que tem que gravar (defeito da v2.9: o tenant era ignorado e salvava na linha do operador) */
-      ...(operador && tenant ? { tenant } : {}),
-      ativo,
-      global,
-      ...(chave ? { chave } : {}),
-      ...extra,
-    };
-  }
-
-  async function testar() {
-    setOcupado(true);
-    setTeste(null);
-    try {
-      const r = await post<{ ok: boolean; ms: number; modelo: string; contexto_detectado?: number | null }>(
-        "/config/provider/testar",
-        corpo(),
-      );
-      const janela = r.contexto_detectado
-        ? ` · janela detectada: ${r.contexto_detectado.toLocaleString("pt-BR")} tokens`
-        : " · o provider não informou a janela (digite o número abaixo se quiser)";
-      setTeste({ ok: true, msg: `conexão ok · respondeu em ${r.ms} ms · modelo ${r.modelo}${janela}` });
-    } catch (e) {
-      setTeste({ ok: false, msg: (e as Error).message });
-    } finally {
-      setOcupado(false);
-    }
-  }
-
-  async function salvarPadrao() {
-    setOcupado(true);
-    try {
-      const r = await put<ProviderResp>("/config/provider", corpo());
-      setP(r);
-      setChave("");
-      setFormPadraoAberto(false);
-      toast("provider salvo", "sucesso");
-      await carregar();
-    } catch (e) {
-      toast("salvar: " + (e as Error).message, "erro");
-    } finally {
-      setOcupado(false);
-    }
-  }
-
-  /** v3.35 — as instruções são da conta: salvam sozinhas, sem tocar no provider.
-   *  v3.55 — rodadas, memória e intactas viajam no mesmo save (são da conta também). */
-  async function salvarInstrucoes(texto: string) {
-    setOcupado(true);
-    try {
-      const r = await put<{
-        system_prompt: string;
-        tem_system_prompt: boolean;
-        max_rodadas: number;
-        memoria_turnos: number;
-        verbatim_turnos: number;
-        comp?: ProviderResp["comp"];
-      }>("/config/instrucoes", {
-        texto,
-        max_rodadas: Number(rodadas),
-        memoria_turnos: Number(memoria),
-        verbatim_turnos: Number(verbatim),
-        threshold_k: Number(thresholdK),
-        compactacao_percent: Number(percentual),
-        tail_chars_cap: Number(tailCap),
-        pairs_block_cap: Number(pairsCap),
-        summary_chars_cap: Number(summaryCap),
-        max_pairs: Number(maxPairs),
-        ...(operador && tenant ? { tenant } : {}),
-      });
-      setP((atual) =>
-        atual
-          ? {
-              ...atual,
-              system_prompt: r.system_prompt,
-              tem_system_prompt: r.tem_system_prompt,
-              max_rodadas: r.max_rodadas,
-              memoria_turnos: r.memoria_turnos,
-              verbatim_turnos: r.verbatim_turnos,
-              ...(r.comp ? { comp: r.comp } : {}),
-            }
-          : atual,
-      );
-      toast("instruções e comportamento salvos", "sucesso");
-      await carregar();
-    } catch (e) {
-      toast("salvar instruções: " + (e as Error).message, "erro");
-    } finally {
-      setOcupado(false);
-    }
-  }
+  /* v3.69: testar/salvar o "padrão da casa" e salvarInstruções saíram daqui —
+     o comportamento (instruções, rodadas, memória, compactação) vive na seção
+     Comportamento; o teste de conexão por linha usa "modelos" (mesmo serviço). */
 
   function preencherNomeado(pr: Provedor) {
     setEditando(pr.nome);
@@ -401,8 +251,262 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
         </span>
       </h2>
 
-      {/* v3.35 — a instrução é da CONTA, não do modelo: fica FORA do formulário do provider
-          justamente porque vale para todos eles (antes morava dentro de cada um). */}
+      <table className="tabela mt-3" id="listaProviders">
+        <thead>
+          <tr>
+            <th>provider</th>
+            <th>tipo · URL base</th>
+            <th>modelo(s)</th>
+            <th>status</th>
+            {operador && <th></th>}
+          </tr>
+        </thead>
+        <tbody>
+          {/* v3.60 — a lista é UMA: todo provedor é uma linha, com público/privado e padrão.
+              O antigo "padrão da casa" foi migrado para uma linha normal (Clauricio). */}
+          {lista.length === 0 && (
+            <tr>
+              <td colSpan={5}>
+                <span className="sub2">
+                  nenhum provedor cadastrado — sem provedor visível para esta conta o chat não aparece
+                </span>
+              </td>
+            </tr>
+          )}
+          {lista.map((pr) => (
+            <tr key={pr.id} id={"prov-" + pr.nome} className={pr.ativo ? "" : "op-60"}>
+              <td>
+                <b className="mono">{pr.nome}</b>
+                <span className="sub2 block">
+                  {pr.publico ? "público — todo mundo vê" : "privado — só quem é desta conta"} ·{" "}
+                  {pr.escopo === "*" ? "conta do operador" : `escopo: ${pr.escopo}`}
+                </span>
+              </td>
+              <td className="mono break-all">
+                {pr.tipo === "ollama" ? "ollama" : "openai"} · {pr.base_url}
+              </td>
+              <td className="mono break-all">
+                {pr.modelos.length ? pr.modelos.join(" · ") : pr.modelo || "—"}
+              </td>
+              <td>
+                {pr.padrao ? (
+                  <span className="chip chip-verde">padrão</span>
+                ) : pr.ativo ? (
+                  <span className="chip chip-verde">ativo</span>
+                ) : (
+                  <span className="chip">inativo</span>
+                )}
+                <span className="chip">{pr.publico ? "público" : "privado"}</span>
+                {pr.chave_mascarada ? <span className="chip">{pr.chave_mascarada}</span> : null}
+              </td>
+              {operador && (
+                <td className="text-right">
+                  <button className="btn btn-mini" disabled={rodando === pr.nome} onClick={() => void descobrir(pr)}>
+                    modelos
+                  </button>
+                  {!pr.padrao && (
+                    <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => void definirPadrao(pr)}>
+                      padrão
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-mini ml-1"
+                    title={pr.publico ? "tornar privado (só esta conta vê)" : "tornar público (todos veem)"}
+                    disabled={rodando === pr.nome}
+                    onClick={() => void alternarPublico(pr)}
+                  >
+                    {pr.publico ? "tornar privado" : "tornar público"}
+                  </button>
+                  <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => void alternar(pr)}>
+                    {pr.ativo ? "desligar" : "ligar"}
+                  </button>
+                  <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => preencherNomeado(pr)}>
+                    {editando === pr.nome && formNomeadoAberto ? "editando…" : "editar"}
+                  </button>
+                  <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => void apagarNomeado(pr)}>
+                    apagar
+                  </button>
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {operador && !formNomeadoAberto && (
+        <button
+          id="btnNovoProvedor"
+          className="btn mt-3 self-start"
+          onClick={() => {
+            setEditando(null);
+            setFormNomeadoAberto(true);
+          }}
+        >
+          + novo provider
+        </button>
+      )}
+
+      {/* form de criação/edição dos providers nomeados */}
+      {formNomeadoAberto && operador && (
+        <div className="mt-3 flex max-w-[560px] flex-col gap-3 border-t border-borda pt-3" id="formNovoProvedor">
+          <label className="rotulo m-0">
+            nome (é o que aparece no seletor do chat)
+            <input id="provNome" className="campo mt-1" value={novo.nome} placeholder="ex.: claude, gemini, llama-local"
+              disabled={Boolean(editando)} onChange={(e) => setNovo({ ...novo, nome: e.target.value })} />
+          </label>
+          <label className="rotulo m-0">
+            tipo
+            <select id="provTipo" className="campo mt-1" value={novo.tipo} onChange={(e) => setNovo({ ...novo, tipo: e.target.value })}>
+              <option value="openai">OpenAI compatível (llama.cpp, LiteLLM, vLLM...)</option>
+              <option value="ollama">Ollama local</option>
+            </select>
+          </label>
+          <label className="rotulo m-0">
+            URL do serviço
+            <input id="provUrlNomeado" className="campo mt-1 mono" value={novo.base_url} placeholder="https://gw.exemplo.com/v1"
+              onChange={(e) => setNovo({ ...novo, base_url: e.target.value })} />
+          </label>
+          <label className="rotulo m-0">
+            chave {editando ? "(deixe em branco para manter a atual)" : ""}
+            <input id="provChaveNomeado" className="campo mt-1 mono" type="password" value={novo.chave} placeholder={editando ? "••••••" : "sk-…"}
+              onChange={(e) => setNovo({ ...novo, chave: e.target.value })} />
+          </label>
+          <label className="rotulo m-0">
+            modelo preferido (o chat pode trocar por outro descoberto)
+            <input id="provModeloNomeado" className="campo mt-1 mono" value={novo.modelo} placeholder="ex.: claude-sonnet-4-20250514"
+              onChange={(e) => setNovo({ ...novo, modelo: e.target.value })} />
+          </label>
+          <label className="check">
+            <input id="provGlobal" type="checkbox" checked={novo.paraTodos}
+              onChange={(e) => setNovo({ ...novo, paraTodos: e.target.checked })} />
+            pertence à conta do operador (global) — desmarcado, fica no escopo desta conta
+          </label>
+          <label className="check">
+            <input id="provPublico" type="checkbox" checked={novo.publico}
+              onChange={(e) => setNovo({ ...novo, publico: e.target.checked })} />
+            público — qualquer conta vê e pode escolher no chat (desmarcado: privado, só quem é desta conta)
+          </label>
+          <label className="check">
+            <input id="provPadrao" type="checkbox" checked={novo.padrao}
+              onChange={(e) => setNovo({ ...novo, padrao: e.target.checked })} />
+            padrão — quem vê este provedor e não escolhe outro usa ele
+          </label>
+          <div>
+            <button id="btnSalvarProvedor" className="btn" disabled={rodando === "form"} onClick={() => void salvarNomeado()}>
+              {editando ? "salvar mudanças" : "cadastrar"}
+            </button>
+            <button className="btn btn-mini ml-2" onClick={() => { setFormNomeadoAberto(false); setEditando(null); setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global" }); }}>
+              fechar
+            </button>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+
+/* ------------------------------------------------------- comportamento do agente */
+
+/** v3.69 (pedido do dono): seção própria para o COMPORTAMENTO da CONTA — instruções,
+ *  rodadas, memória, intactas e compactação. Vale para TODO provedor: a linha do provedor
+ *  define o SERVIÇO (URL, chave, modelo, público/padrão), a conta define o comportamento. */
+function Comportamento({ operador, tenant }: { operador: boolean; tenant: string }) {
+  const { toast } = useToast();
+  const [p, setP] = useState<ProviderResp | null>(null);
+  const [prompt, setPrompt] = useState("");
+  const [rodadas, setRodadas] = useState("5");
+  const [memoria, setMemoria] = useState("12");
+  const [verbatim, setVerbatim] = useState("20");
+  /* v3.56 — compactação com a mecânica do mini-compress (gatilho + tetos das partes A/B/C) */
+  const [thresholdK, setThresholdK] = useState("200");
+  const [percentual, setPercentual] = useState("90");
+  const [tailCap, setTailCap] = useState("80000");
+  const [pairsCap, setPairsCap] = useState("40000");
+  const [summaryCap, setSummaryCap] = useState("12000");
+  const [maxPairs, setMaxPairs] = useState("8");
+  const [ocupado, setOcupado] = useState(false);
+
+  const carregar = useCallback(async () => {
+    try {
+      const r = await get<ProviderResp>("/config/provider" + (operador && tenant ? "?" + qs({ tenant }) : ""));
+      setP(r);
+      /* v3.35.1: o cartão mostra o que o SERVIDOR tem, não o que sobrou de um clique anterior */
+      setPrompt(r.system_prompt ?? "");
+      setRodadas(String(r.max_rodadas));
+      setMemoria(String(r.memoria_turnos ?? 12));
+      setVerbatim(String(r.verbatim_turnos ?? 20));
+      setThresholdK(String(r.comp?.thresholdK ?? 200));
+      setPercentual(String(r.comp?.percentualJanela ?? 90));
+      setTailCap(String(r.comp?.tailCharsCap ?? 80000));
+      setPairsCap(String(r.comp?.pairsBlockCap ?? 40000));
+      setSummaryCap(String(r.comp?.summaryCharsCap ?? 12000));
+      setMaxPairs(String(r.comp?.maxPairs ?? 8));
+    } catch (e) {
+      toast("comportamento: " + (e as Error).message, "erro");
+    }
+  }, [operador, tenant, toast]);
+
+  useEffect(() => {
+    void carregar();
+  }, [carregar]);
+
+  /** as instruções são da conta e salvam junto do resto do comportamento, sem tocar em provider */
+  async function salvarInstrucoes(texto: string) {
+    setOcupado(true);
+    try {
+      const r = await put<{
+        system_prompt: string;
+        tem_system_prompt: boolean;
+        max_rodadas: number;
+        memoria_turnos: number;
+        verbatim_turnos: number;
+        comp?: ProviderResp["comp"];
+      }>("/config/instrucoes", {
+        texto,
+        max_rodadas: Number(rodadas),
+        memoria_turnos: Number(memoria),
+        verbatim_turnos: Number(verbatim),
+        threshold_k: Number(thresholdK),
+        compactacao_percent: Number(percentual),
+        tail_chars_cap: Number(tailCap),
+        pairs_block_cap: Number(pairsCap),
+        summary_chars_cap: Number(summaryCap),
+        max_pairs: Number(maxPairs),
+        ...(operador && tenant ? { tenant } : {}),
+      });
+      setP((atual) =>
+        atual
+          ? {
+              ...atual,
+              system_prompt: r.system_prompt,
+              tem_system_prompt: r.tem_system_prompt,
+              max_rodadas: r.max_rodadas,
+              memoria_turnos: r.memoria_turnos,
+              verbatim_turnos: r.verbatim_turnos,
+              ...(r.comp ? { comp: r.comp } : {}),
+            }
+          : atual,
+      );
+      toast("comportamento salvo — vale para todos os providers", "sucesso");
+      await carregar();
+    } catch (e) {
+      toast("salvar instruções: " + (e as Error).message, "erro");
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  return (
+    <div className="cartao">
+      <h2 className="mb-1 text-[13px] font-semibold text-txt2">
+        Comportamento do agente
+        <span className="sub2 block font-normal">
+          o que a conta MANDA no modelo — vale para <b>todos</b> os providers; o chat obedece estes números, não a linha do provedor
+        </span>
+      </h2>
+
       <div className="mt-3 rounded-[10px] border border-borda p-3" id="cardInstrucoes">
         <div className="rotulo m-0">instruções e comportamento do modelo</div>
         <span className="sub2 block font-normal">
@@ -571,268 +675,9 @@ function Provider({ operador, tenant, onIrPainel }: { operador: boolean; tenant:
           </div>
         ) : null}
       </div>
-
-      <table className="tabela mt-3" id="listaProviders">
-        <thead>
-          <tr>
-            <th>provider</th>
-            <th>tipo · URL base</th>
-            <th>modelo(s)</th>
-            <th>status</th>
-            {operador && <th></th>}
-          </tr>
-        </thead>
-        <tbody>
-          {/* v3.60 — a lista é UMA: todo provedor é uma linha, com público/privado e padrão.
-              O antigo "padrão da casa" foi migrado para uma linha normal (Clauricio). */}
-          {lista.length === 0 && (
-            <tr>
-              <td colSpan={5}>
-                <span className="sub2">
-                  nenhum provedor cadastrado — sem provedor visível para esta conta o chat não aparece
-                </span>
-              </td>
-            </tr>
-          )}
-          {lista.map((pr) => (
-            <tr key={pr.id} id={"prov-" + pr.nome} className={pr.ativo ? "" : "op-60"}>
-              <td>
-                <b className="mono">{pr.nome}</b>
-                <span className="sub2 block">
-                  {pr.publico ? "público — todo mundo vê" : "privado — só quem é desta conta"} ·{" "}
-                  {pr.escopo === "*" ? "conta do operador" : `escopo: ${pr.escopo}`}
-                </span>
-              </td>
-              <td className="mono break-all">
-                {pr.tipo === "ollama" ? "ollama" : "openai"} · {pr.base_url}
-              </td>
-              <td className="mono break-all">
-                {pr.modelos.length ? pr.modelos.join(" · ") : pr.modelo || "—"}
-              </td>
-              <td>
-                {pr.padrao ? (
-                  <span className="chip chip-verde">padrão</span>
-                ) : pr.ativo ? (
-                  <span className="chip chip-verde">ativo</span>
-                ) : (
-                  <span className="chip">inativo</span>
-                )}
-                <span className="chip">{pr.publico ? "público" : "privado"}</span>
-                {pr.chave_mascarada ? <span className="chip">{pr.chave_mascarada}</span> : null}
-              </td>
-              {operador && (
-                <td className="text-right">
-                  <button className="btn btn-mini" disabled={rodando === pr.nome} onClick={() => void descobrir(pr)}>
-                    modelos
-                  </button>
-                  {!pr.padrao && (
-                    <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => void definirPadrao(pr)}>
-                      padrão
-                    </button>
-                  )}
-                  <button
-                    className="btn btn-mini ml-1"
-                    title={pr.publico ? "tornar privado (só esta conta vê)" : "tornar público (todos veem)"}
-                    disabled={rodando === pr.nome}
-                    onClick={() => void alternarPublico(pr)}
-                  >
-                    {pr.publico ? "tornar privado" : "tornar público"}
-                  </button>
-                  <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => void alternar(pr)}>
-                    {pr.ativo ? "desligar" : "ligar"}
-                  </button>
-                  <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => preencherNomeado(pr)}>
-                    {editando === pr.nome && formNomeadoAberto ? "editando…" : "editar"}
-                  </button>
-                  <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => void apagarNomeado(pr)}>
-                    apagar
-                  </button>
-                </td>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {operador && !formNomeadoAberto && (
-        <button
-          id="btnNovoProvedor"
-          className="btn mt-3 self-start"
-          onClick={() => {
-            setEditando(null);
-            setFormNomeadoAberto(true);
-          }}
-        >
-          + novo provider
-        </button>
-      )}
-
-      {/* form da linha "padrão da casa" (ex-provider do chat) */}
-      {formPadraoAberto && operador && (
-        <div className="mt-3 flex max-w-[620px] flex-col gap-3 border-t border-borda pt-3" id="formProvider">
-          <label className="rotulo m-0">
-            tipo
-            <select className="campo mt-1" value={tipo} onChange={(e) => setTipo(e.target.value as typeof tipo)}>
-              <option value="openai">OpenAI compatível (llama.cpp, LiteLLM, vLLM...)</option>
-              <option value="ollama">Ollama local</option>
-            </select>
-          </label>
-          <div className="grade-2 !gap-3">
-            <label className="rotulo m-0">
-              modelo
-              <input id="provModelo" className="campo mt-1" value={modelo} placeholder="ex.: claude-sonnet-4.5" onChange={(e) => setModelo(e.target.value)} />
-            </label>
-          </div>
-          <label className="rotulo m-0">
-            URL base
-            <input id="provUrl" className="campo mt-1 mono" value={baseUrl} placeholder="https://litellm.exemplo.com/v1" onChange={(e) => setBaseUrl(e.target.value)} />
-            <span className="dica mt-1 block">sem /chat/completions no fim — o sistema completa</span>
-          </label>
-          <label className="rotulo m-0">
-            chave da API
-            <input
-              id="provChave"
-              type="password"
-              className="campo mt-1 mono"
-              value={chave}
-              placeholder={p?.tem_chave ? `${p.chave_mascarada} (deixe vazio para manter)` : "cole a chave do provider"}
-              onChange={(e) => setChave(e.target.value)}
-              autoComplete="new-password"
-            />
-            <span className="dica mt-1 block">guardada no servidor; a tela só vê os 4 últimos caracteres</span>
-          </label>
-          {/* v3.35: as instruções do modelo saíram daqui — são da CONTA, não deste provider.
-              v3.55: rodadas, memória e últimas intactas também saíram (vivem no card do topo,
-              junto das instruções); aqui fica só o que é do serviço e do modelo. */}
-          <div className="grade-2 !gap-3">
-            <label className="rotulo m-0">
-              temperatura
-              <input className="campo mt-1" value={temperatura} onChange={(e) => setTemperatura(e.target.value)} />
-            </label>
-          </div>
-          <div className="grade-3 !gap-3">
-            <label className="rotulo m-0">
-              janela de contexto (tokens)
-              <input id="provContexto" className="campo mt-1" value={contexto} onChange={(e) => setContexto(e.target.value)} />
-              <span className="dica mt-1 block" id="provJanelaDica">
-                0 = automático · em uso: {(p?.janela_efetiva ?? 0).toLocaleString("pt-BR")} tokens (
-                {p?.origem_janela === "configurada" ? "você digitou" : p?.origem_janela === "detectada" ? "detectada no testar conexão" : "padrão do sistema"})
-                {p?.contexto_detectado ? ` · detectado: ${p.contexto_detectado.toLocaleString("pt-BR")}` : ""}
-              </span>
-            </label>
-            <label className="rotulo m-0">
-              reserva para a resposta (tokens)
-              <input id="provReserva" className="campo mt-1" value={reserva} onChange={(e) => setReserva(e.target.value)} />
-              <span className="dica mt-1 block">espaço deixado livre para o modelo escrever</span>
-            </label>
-            <label className="rotulo m-0">
-              espera sem sinal do modelo (segundos)
-              <input id="provSilencio" className="campo mt-1" value={silencio} onChange={(e) => setSilencio(e.target.value)} />
-              <span className="dica mt-1 block" id="provSilencioDica">
-                0 = {p?.silencio_efetivo_s ?? 180} s · é o tempo que o modelo pode passar sem escrever nada antes de eu
-                desistir; resposta longa que não para de escrever nunca é cortada por tempo
-              </span>
-            </label>
-          </div>
-          <div className="cfg-acoes flex flex-wrap items-center gap-3 border-t border-borda pt-3">
-            <label className="check">
-              <input type="checkbox" checked={ativo} onChange={(e) => setAtivo(e.target.checked)} /> usar este provider no chat
-            </label>
-            {operador && (
-              <label className="check">
-                <input type="checkbox" checked={global} onChange={(e) => setGlobal(e.target.checked)} /> gravar como padrão de todos
-              </label>
-            )}
-            <span className="flex-1" />
-            <button id="provTestar" className="btn" disabled={ocupado} onClick={() => void testar()}>
-              testar conexão
-            </button>
-            <button id="provSalvar" className="btn btn-primario" disabled={ocupado} onClick={() => void salvarPadrao()}>
-              salvar
-            </button>
-            <button className="btn btn-sutil" onClick={() => setFormPadraoAberto(false)}>
-              cancelar
-            </button>
-          </div>
-          {teste && (
-            <p className={teste.ok ? "text-[13px] text-verde" : "text-[13px] text-vermelho"} id="provTesteResultado">
-              {teste.ok ? "✓ " : "✕ "}
-              {teste.msg}
-            </p>
-          )}
-          {p && !p.configurado && (
-            <div className="aviso">
-              <span>Sem provider o Chat fica desligado — a Busca continua funcionando normalmente.</span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* form de criação/edição dos providers nomeados */}
-      {formNomeadoAberto && operador && (
-        <div className="mt-3 flex max-w-[560px] flex-col gap-3 border-t border-borda pt-3" id="formNovoProvedor">
-          <label className="rotulo m-0">
-            nome (é o que aparece no seletor do chat)
-            <input id="provNome" className="campo mt-1" value={novo.nome} placeholder="ex.: claude, gemini, llama-local"
-              disabled={Boolean(editando)} onChange={(e) => setNovo({ ...novo, nome: e.target.value })} />
-          </label>
-          <label className="rotulo m-0">
-            tipo
-            <select id="provTipo" className="campo mt-1" value={novo.tipo} onChange={(e) => setNovo({ ...novo, tipo: e.target.value })}>
-              <option value="openai">OpenAI compatível (llama.cpp, LiteLLM, vLLM...)</option>
-              <option value="ollama">Ollama local</option>
-            </select>
-          </label>
-          <label className="rotulo m-0">
-            URL do serviço
-            <input id="provUrlNomeado" className="campo mt-1 mono" value={novo.base_url} placeholder="https://gw.exemplo.com/v1"
-              onChange={(e) => setNovo({ ...novo, base_url: e.target.value })} />
-          </label>
-          <label className="rotulo m-0">
-            chave {editando ? "(deixe em branco para manter a atual)" : ""}
-            <input id="provChaveNomeado" className="campo mt-1 mono" type="password" value={novo.chave} placeholder={editando ? "••••••" : "sk-…"}
-              onChange={(e) => setNovo({ ...novo, chave: e.target.value })} />
-          </label>
-          <label className="rotulo m-0">
-            modelo preferido (o chat pode trocar por outro descoberto)
-            <input id="provModeloNomeado" className="campo mt-1 mono" value={novo.modelo} placeholder="ex.: claude-sonnet-4-20250514"
-              onChange={(e) => setNovo({ ...novo, modelo: e.target.value })} />
-          </label>
-          <label className="check">
-            <input id="provGlobal" type="checkbox" checked={novo.paraTodos}
-              onChange={(e) => setNovo({ ...novo, paraTodos: e.target.checked })} />
-            pertence à conta do operador (global) — desmarcado, fica no escopo desta conta
-          </label>
-          <label className="check">
-            <input id="provPublico" type="checkbox" checked={novo.publico}
-              onChange={(e) => setNovo({ ...novo, publico: e.target.checked })} />
-            público — qualquer conta vê e pode escolher no chat (desmarcado: privado, só quem é desta conta)
-          </label>
-          <label className="check">
-            <input id="provPadrao" type="checkbox" checked={novo.padrao}
-              onChange={(e) => setNovo({ ...novo, padrao: e.target.checked })} />
-            padrão — quem vê este provedor e não escolhe outro usa ele
-          </label>
-          <div>
-            <button id="btnSalvarProvedor" className="btn" disabled={rodando === "form"} onClick={() => void salvarNomeado()}>
-              {editando ? "salvar mudanças" : "cadastrar"}
-            </button>
-            <button className="btn btn-mini ml-2" onClick={() => { setFormNomeadoAberto(false); setEditando(null); setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global" }); }}>
-              fechar
-            </button>
-          </div>
-        </div>
-      )}
-
-      {p?.configurado && (
-        <button className="btn btn-sutil mt-3 self-start" onClick={onIrPainel}>
-          ver no painel
-        </button>
-      )}
     </div>
   );
 }
-
 
 /* ---------------------------------------------------------- ferramentas */
 

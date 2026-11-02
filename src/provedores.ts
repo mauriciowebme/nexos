@@ -175,11 +175,13 @@ export async function salvarProvedor(user: Usuario, corpo: CorpoProvedor): Promi
   const modelo = String(corpo.modelo ?? "").trim();
   const temperatura = corpo.temperatura === undefined ? 0.2 : Number(corpo.temperatura);
   if (!Number.isFinite(temperatura) || temperatura < 0 || temperatura > 1) throw erro422("temperatura deve estar entre 0 e 1");
-  const maxRodadas = corpo.max_rodadas === undefined ? 5 : Number(corpo.max_rodadas);
-  if (!Number.isInteger(maxRodadas) || maxRodadas < 0 || maxRodadas > 60) throw erro422("max_rodadas deve ser 0–60");
-
   const anterior = await q<Linha>(`SELECT * FROM provedores WHERE escopo = $1 AND nome = $2`, [escopo, nome]);
   const l = anterior.rows[0];
+  /* v3.69: omitir max_rodadas ao EDITAR preserva a linha (antes resetava para 5 em silêncio,
+     igual ao defeito do prompt que a v3.34 consertou). O CHAT nem lê mais este campo:
+     rodadas/memória/intactas são da CONTA (tela Comportamento) e valem para todo provedor. */
+  const maxRodadas = corpo.max_rodadas === undefined ? Number(l?.max_rodadas ?? 5) : Number(corpo.max_rodadas);
+  if (!Number.isInteger(maxRodadas) || maxRodadas < 0 || maxRodadas > 60) throw erro422("max_rodadas deve ser 0–60");
   /* v3.34: omitir as instruções ao EDITAR preserva as que já estavam (antes zerava sem avisar);
      provedor novo sem instruções nasce vazio — `""` explícito também é conversa pura. */
   const prompt = corpo.system_prompt === undefined ? String(l?.system_prompt ?? "") : String(corpo.system_prompt);

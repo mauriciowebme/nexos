@@ -233,8 +233,10 @@ export async function resolverProvider(
   tenant: string,
   escolha?: { provedor?: string; modelo?: string; operador?: boolean },
 ): Promise<CfgResolvida | null> {
-  /* v3.56 — a compactação é da CONTA (como as instruções): vale igual para qualquer provedor. */
+  /* v3.56 — a compactação é da CONTA (como as instruções): vale igual para qualquer provedor.
+     v3.69 — idem rodadas/memória/intactas (pedido do dono: a tela principal manda em todos). */
   const comp = await lerOpcoesCompactacao(tenant);
+  const conta = await lerComportamentoConta(tenant);
   const user: Usuario = { tenant, operador: Boolean(escolha?.operador) };
   const nome = String(escolha?.provedor ?? "").trim();
   if (nome) {
@@ -261,6 +263,11 @@ export async function resolverProvider(
       cfg.modelo = modelo;
     }
     cfg.comp = comp;
+    /* v3.69: o comportamento da CONTA vence a linha do provedor (pedido do dono:
+       "todos os providers devem respeitar o que está configurado na tela principal"). */
+    cfg.max_rodadas = conta.max_rodadas;
+    cfg.memoria_turnos = conta.memoria_turnos;
+    cfg.verbatim_turnos = conta.verbatim_turnos;
     return cfg;
   }
   /* padrão: o marcado no escopo do usuário vence; depois o público marcado como padrão.
@@ -277,6 +284,9 @@ export async function resolverProvider(
   if (viaPadrao) {
     if (modeloSolto) viaPadrao.modelo = modeloSolto;
     viaPadrao.comp = comp;
+    viaPadrao.max_rodadas = conta.max_rodadas;
+    viaPadrao.memoria_turnos = conta.memoria_turnos;
+    viaPadrao.verbatim_turnos = conta.verbatim_turnos;
     return viaPadrao;
   }
   /* v3.60 — sem PADRÃO não há chat (regra do dono: "se não tiver padrão, não exibe o chat").
@@ -352,6 +362,30 @@ export async function lerOpcoesCompactacao(tenant: string): Promise<Opcoes> {
     [tenant, GLOBAL],
   );
   return opcoesDaLinha(r.rows[0]);
+}
+
+/** v3.69 — pedido do dono: o COMPORTAMENTO é da CONTA e vale para TODO provedor.
+ *  Rodadas, memória e últimas intactas do chat vêm do card principal (a tela de
+ *  Configurações → Comportamento), com a MESMA precedência das instruções
+ *  (`lerInstrucoes`): a linha do escopo, mesmo sem serviço, vence a global.
+ *  Defeito que isso encerra: desde a v3.60 a tela salvava na conta e o chat
+ *  resolvia pela linha do provedor (o valor gravado não tinha efeito nenhum). */
+export async function lerComportamentoConta(tenant: string): Promise<{
+  max_rodadas: number;
+  memoria_turnos: number;
+  verbatim_turnos: number;
+}> {
+  const r = await q<Linha>(
+    `SELECT * FROM provider_config WHERE escopo IN ($1, $2)
+     ORDER BY (escopo = $1) DESC LIMIT 1`,
+    [tenant, GLOBAL],
+  );
+  const l = r.rows[0];
+  return {
+    max_rodadas: Number(l?.max_rodadas ?? RODADAS_PADRAO),
+    memoria_turnos: Number(l?.memoria_turnos ?? MEMORIA_PADRAO),
+    verbatim_turnos: Number(l?.verbatim_turnos ?? VERBATIM_PADRAO),
+  };
 }
 
 /** Grava as instruções e o comportamento do agente (v3.55: rodadas, memória e intactas
@@ -463,6 +497,10 @@ export async function verProvider(user: Usuario, tenantArg?: string | null) {
   const plano = planoDeJanela(l);
   /* v3.35: a instrução mostrada é a da CONTA (não a da linha que por acaso serve o chat) */
   const instrucoes = await lerInstrucoes(tenant);
+  /* v3.69: os NÚMEROS do comportamento exibidos na tela são os MESMOS que o chat obedece
+     (precedência de escopo, como as instruções) — fim da leitura divergente: a tela mostrava
+     a linha completa e o chat obedecia a linha do escopo. */
+  const comportamento = await lerComportamentoConta(tenant);
   /* v3.60 — o "configurado" agora é: existe pelo menos um provedor que esta conta enxerga.
      A tabela da tela lista todos (aquela lista já vem filtrada por visibilidade). */
   const visiveis = await q<Record<string, any>>(
@@ -499,9 +537,9 @@ export async function verProvider(user: Usuario, tenantArg?: string | null) {
     /** v3.34: o texto padrão da casa, para o botão "restaurar instruções padrão" da tela */
     regras_padrao: REGRAS_CASA,
     mcp_interno: Boolean(l?.mcp_interno ?? false),
-    max_rodadas: l ? Number(l.max_rodadas ?? RODADAS_PADRAO) : RODADAS_PADRAO,
-    memoria_turnos: l ? Number(l.memoria_turnos ?? MEMORIA_PADRAO) : MEMORIA_PADRAO,
-    verbatim_turnos: l ? Number(l.verbatim_turnos ?? VERBATIM_PADRAO) : VERBATIM_PADRAO,
+    max_rodadas: comportamento.max_rodadas,
+    memoria_turnos: comportamento.memoria_turnos,
+    verbatim_turnos: comportamento.verbatim_turnos,
     /* v3.56 — compactação (é da CONTA, igual às instruções): lê com a MESMA precedência
        de `lerInstrucoes` (linha própria vence a global), não a linha que serve o provider */
     comp: await lerOpcoesCompactacao(tenant),

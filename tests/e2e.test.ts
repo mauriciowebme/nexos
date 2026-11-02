@@ -1429,28 +1429,34 @@ test("nexos v2 — suíte completa", async (t) => {
     const provedor = async (corpo: Record<string, unknown>) => {
       /* v3.35: as instruções são da CONTA (linha do escopo), não do provider. O chat deste bloco
          roda como `teste`, então o texto tem que ser gravado no escopo dele — o PUT do provider
-         continua gravando a linha global, e as duas pontas ficam iguais. */
-      if (corpo.system_prompt !== undefined) {
-        await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { texto: String(corpo.system_prompt), tenant: "teste" } });
-      }
-      return call("PUT", "/config/provider", {
+         continua gravando a linha global, e as duas pontas ficam iguais.
+         v3.69: o COMPORTAMENTO (rodadas/memória/intactas) também é da conta do chat — o espelho
+         manda para a conta `teste` os MESMOS números efetivos do corpo (é o que o chat obedece). */
+      const efetivo = {
+        tipo: "litellm",
+        base_url: "http://127.0.0.1:9913/v1",
+        modelo: "eco",
+        temperatura: 0,
+        system_prompt: "",
+        mcp_interno: false,
+        max_rodadas: 3,
+        ativo: true,
+        global: true,
+        /* memoria_turnos 0: este bloco prova PROMPT e FERRAMENTA. Memória da conversa tem o
+           bloco próprio (v3.0); deixar ligada aqui faria o fake ver rodadas de outros testes. */
+        memoria_turnos: 0,
+        ...corpo,
+      };
+      await call("PUT", "/config/instrucoes", {
         key: OPKEY,
         corpo: {
-          tipo: "litellm",
-          base_url: "http://127.0.0.1:9913/v1",
-          modelo: "eco",
-          temperatura: 0,
-          system_prompt: "",
-          mcp_interno: false,
-          max_rodadas: 3,
-          ativo: true,
-          global: true,
-          /* memoria_turnos 0: este bloco prova PROMPT e FERRAMENTA. Memória da conversa tem o
-             bloco próprio (v3.0); deixar ligada aqui faria o fake ver rodadas de outros testes. */
-          memoria_turnos: 0,
-          ...corpo,
+          ...(corpo.system_prompt !== undefined ? { texto: String(corpo.system_prompt) } : {}),
+          max_rodadas: Number(efetivo.max_rodadas),
+          memoria_turnos: Number(efetivo.memoria_turnos),
+          tenant: "teste",
         },
       });
+      return call("PUT", "/config/provider", { key: OPKEY, corpo: efetivo });
     };
 
     /* ---- 1. provider é o único pré-requisito; sem prompt = conversa pura ---- */
@@ -1747,6 +1753,8 @@ test("nexos v2 — suíte completa", async (t) => {
         global: true,
       },
     });
+    /* v3.69: o chat deste bloco roda como `teste` — o comportamento obedece a CONTA dele */
+    await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tenant: "teste", max_rodadas: 3, memoria_turnos: 0 } });
     f.check("provider do fluxo salvo com MCP interno", r.status === 200 && r.json?.mcp_interno === true, r.texto.slice(0, 160));
 
     console.log("-- /chat/stream");
@@ -1786,6 +1794,8 @@ test("nexos v2 — suíte completa", async (t) => {
       key: OPKEY,
       corpo: { tipo: "litellm", base_url: "http://127.0.0.1:9914/v1", modelo: "limite", mcp_interno: true, max_rodadas: 2, ativo: true, global: true },
     });
+    /* v3.69: freio da CONTA `teste` (é ela que o chat obedece) */
+    await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tenant: "teste", max_rodadas: 2, memoria_turnos: 0 } });
     const fluxoLimite = await fluxo(TESTKEY, { pergunta: "sem limite por favor", memoria: GAV });
     const dadosLimite = fluxoLimite.eventos.find((e) => e.tipo === "fim")?.dados ?? {};
     f.check("freio de rodadas avisou", /limite de 2 rodadas/.test(String(dadosLimite.aviso ?? "")), dadosLimite.aviso);
@@ -1794,6 +1804,7 @@ test("nexos v2 — suíte completa", async (t) => {
       key: OPKEY,
       corpo: { tipo: "litellm", base_url: "http://127.0.0.1:9914/v1", modelo: "fluxo", mcp_interno: true, max_rodadas: 3, ativo: true, global: true },
     });
+    await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tenant: "teste", max_rodadas: 3, memoria_turnos: 0 } });
 
     r = await call("GET", `/chat?memoria=${GAV}`, { key: TESTKEY });
     f.check("o histórico do fluxo gravado (pergunta + resposta limpa)", (r.json?.mensagens ?? []).length >= 2 && !(r.json?.mensagens ?? []).some((x: any) => /Thinking:/.test(String(x.texto ?? ""))), (r.json?.mensagens ?? []).length);
@@ -4521,6 +4532,76 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     });
 
     f.fechar("v3.67");
+  });
+
+  await bloco(t, "v3.69: comportamento da CONTA vence a linha do provedor", async () => {
+    const f = fiscal();
+    const CONTAINER = process.env.CONTAINER ?? "";
+    const GAV = "suite-v369";
+    const sql = (q: string) =>
+      execFileSync("docker", ["exec", process.env.DBCONTAINER ?? CONTAINER.replace("-api-", "-db-"), "sh", "-c",
+        `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "${q}"`], { encoding: "utf8" }).trim();
+
+    /* fake que SEMPRE quer ferramenta: com rodadas da conta = 1 o loop tem que parar em 1 chamada */
+    const cod = [
+      "const http=require('http');",
+      "const s=http.createServer((q,r)=>{if(q.url.includes('chat/completions')){let b='';q.on('data',c=>b+=c);q.on('end',()=>{",
+      "const p=JSON.parse(b||'{}');const tools=p.tools||[];",
+      "if(tools.length){r.end(JSON.stringify({choices:[{message:{role:'assistant',content:'quero ferramenta',tool_calls:[{id:'c1',type:'function',function:{name:tools[0].function.name,arguments:'{}'}}]}}]}));}",
+      "else{r.end(JSON.stringify({choices:[{message:{role:'assistant',content:'SEM_TOOLS'}}]}));}",
+      "});}else{r.end(JSON.stringify({data:[{id:'v369'}]}));}});",
+      "s.listen(9921,'127.0.0.1');setTimeout(()=>process.exit(0),240000);",
+    ].join("");
+    execFileSync("docker", ["exec", "-d", String(CONTAINER), "node", "-e", cod]);
+    await dormir(1200);
+
+    /* 1) provedor nomeado COM tetos próprios na linha (memória 3) */
+    let r = await call("PUT", "/provedores", {
+      key: OPKEY,
+      corpo: { nome: "linha369", tipo: "openai", base_url: "http://127.0.0.1:9921/v1", modelo: "v369", chave: "***",
+               mcp_interno: true, max_rodadas: 9, ativo: true, tenant: "global" },
+    });
+    f.check("v3.69 provedor de prova criado com max_rodadas=9 na linha", r.status === 200 && Number(r.json?.provedor?.id) > 0, r.texto.slice(0, 160));
+
+    /* 2) o COMPORTAMENTO da CONTA do chat (tenant `teste`): rodadas=1 pela rota LEGADO
+       completa (grava provider_config e espelha como provedor padrão do escopo) */
+    r = await call("PUT", "/config/provider", {
+      key: OPKEY,
+      corpo: { tenant: "teste", tipo: "openai", base_url: "http://127.0.0.1:9921/v1", modelo: "v369t", chave: "***",
+               temperatura: 0, system_prompt: "", mcp_interno: true, max_rodadas: 1, memoria_turnos: 2,
+               verbatim_turnos: 2, ativo: true, global: false },
+    });
+    f.check("v3.69 comportamento da conta salvo com rodadas=1", r.status === 200 && r.json?.max_rodadas === 1, r.texto.slice(0, 160));
+
+    /* 3) o chat NOMEADO obedece a CONTA, não a linha (que dizia 9) */
+    r = await call("POST", "/chat", { key: TESTKEY, corpo: { pergunta: "oi sonda 369", memoria: GAV, provedor: "linha369" } });
+    f.check("v3.69 chat com provedor nomeado respeita as rodadas da CONTA", r.status === 200 && (r.json?.ferramentas ?? []).length <= 1 && /limite de 1 rodada/.test(String(r.json?.aviso ?? "")), {
+      status: r.status, chamadas: (r.json?.ferramentas ?? []).length, aviso: r.json?.aviso,
+    });
+
+    /* 4) caminho PADRÃO: o chat do `teste` sem escolha cai no espelho da rota legado
+       (V369t, padrão do escopo) — mesmo contrato: as rodadas são as da CONTA (1) */
+    r = await call("POST", "/chat", { key: TESTKEY, corpo: { pergunta: "oi padrão 369", memoria: GAV } });
+    f.check("v3.69 chat via PADRÃO também obedece a CONTA", r.status === 200 && (r.json?.ferramentas ?? []).length <= 1 && /limite de 1 rodada/.test(String(r.json?.aviso ?? "")), {
+      status: r.status, chamadas: (r.json?.ferramentas ?? []).length, aviso: r.json?.aviso,
+    });
+
+    /* 5) editar a linha SEM max_rodadas não zera para 5 (era o reset silencioso) */
+    r = await call("PUT", "/provedores", {
+      key: OPKEY,
+      corpo: { nome: "linha369", tipo: "openai", base_url: "http://127.0.0.1:9921/v1", modelo: "v369", chave: "***",
+               ativo: true, tenant: "global" },
+    });
+    const mantida = sql(`SELECT max_rodadas FROM provedores WHERE nome='linha369'`);
+    f.check("v3.69 editar sem max_rodadas PRESERVA a linha (sem reset para 5)", r.status === 200 && Number(mantida) === 9, { status: r.status, na_linha: mantida });
+
+    /* limpeza: linha some, comportamento do `teste` volta a estar desligado (como estava antes do bloco) */
+    const idLinha = Number((await call("GET", "/provedores", { key: OPKEY })).json?.provedores?.find((x: any) => x.nome === "linha369")?.id ?? 0);
+    if (idLinha) await call("DELETE", `/provedores/${idLinha}`, { key: OPKEY });
+    await call("PUT", "/config/provider", { key: OPKEY, corpo: { tenant: "teste", tipo: "openai", base_url: "http://127.0.0.1:9921/v1", modelo: "v369t", ativo: false, global: false } });
+    await call("DELETE", `/chat?memoria=${GAV}`, { key: OPKEY });
+    execFileSync("docker", ["exec", String(CONTAINER), "sh", "-c", pkill(9921)], { stdio: "ignore" });
+    f.fechar("v3.69 comportamento da conta");
   });
 
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {
