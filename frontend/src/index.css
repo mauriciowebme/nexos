@@ -1383,6 +1383,11 @@
   }
   .chat-topo {
     @apply mb-0 border-b border-borda px-3 pb-2;
+    /* v3.66.0 (dono, 02/11): sem respiro em cima os botões colavam na borda da tela
+       no celular — a barra é o primeiro elemento do chat em tela cheia (100dvh), e o
+       .chat-janela só trata a área segura de BAIXO. O padding-top soma a área segura
+       do aparelho para não ficar sob a barra de status/notch. */
+    padding-top: calc(10px + env(safe-area-inset-top));
   }
   .chat-msgs {
     @apply px-3 pt-3 pb-1;
