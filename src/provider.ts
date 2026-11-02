@@ -28,6 +28,15 @@ import {
   resumirSaida,
 } from "./ferramentas";
 
+/** v3.67 — o provedor respondeu 200 sem texto e sem ferramenta: é resposta vazia, não erro de rota.
+ * Vira aviso na tela (o chat do admin ficou com bolha em branco em 02/11 por causa disto). */
+export class RespostaVazia extends Error {
+  constructor() {
+    super("o provedor respondeu sem texto e sem chamada de ferramenta");
+    this.name = "RespostaVazia";
+  }
+}
+
 export type TipoProvider = "litellm" | "openai" | "ollama";
 
 const GLOBAL = "*";
@@ -892,7 +901,7 @@ export async function chamarModelo(
     const toolCalls: ChamadaTool[] = Object.values(chamadas)
       .filter((c) => c.nome)
       .map((c, n) => ({ id: c.id || `call_${Date.now()}_${n}`, type: "function", function: { name: c.nome, arguments: c.args || "{}" } }));
-    if (!texto && !toolCalls.length) throw erro422("provider respondeu sem texto e sem chamada de ferramenta");
+    if (!texto && !toolCalls.length) throw new RespostaVazia();
     return {
       message: { role: "assistant", content: texto, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) },
       texto: texto.trim(),
@@ -920,7 +929,7 @@ export async function chamarModelo(
   const mensagem = json?.choices?.[0]?.message ?? json?.message ?? {};
   const conteudo = typeof mensagem.content === "string" ? mensagem.content : "";
   const toolCalls = Array.isArray(mensagem.tool_calls) ? (mensagem.tool_calls as ChamadaTool[]) : undefined;
-  if (!conteudo && !toolCalls?.length) throw erro422("provider respondeu sem texto e sem chamada de ferramenta");
+  if (!conteudo && !toolCalls?.length) throw new RespostaVazia();
   return {
     message: { role: "assistant", content: conteudo, ...(toolCalls ? { tool_calls: toolCalls } : {}) },
     texto: conteudo.trim(),
@@ -1289,61 +1298,68 @@ export async function responderChat(
       compactacao.disponivel = apertado.disponivel;
       if (apertado.tokens > apertado.disponivel) compactacao.coube = false;
     }
-    const r = await chamarModelo(cfg, mensagens, {
-      tools: usaFerramentas ? pacote.specs : undefined,
-      stream: Boolean(emitir),
-      /* v3.24: cada rodada traz chamadas novas — o acumulador de argumentos zera aqui */
-      onArgs: emitir
-        ? (indice, nome, pedaco) => {
-            let p = parciais.get(indice);
-            if (!p) {
-              p = { nome: "", bruto: "", emitido: 0 };
-              parciais.set(indice, p);
-            }
-            if (nome) p.nome = nome;
-            p.bruto += pedaco;
-            if (!/tela/i.test(p.nome)) return; /* só a tela interessa para o olho */
-            const html = htmlParcial(p.bruto);
-            if (html.length > p.emitido) {
-              emitir({ tipo: "codigo", texto: html.slice(p.emitido) });
-              p.emitido = html.length;
-            }
-          }
-        : undefined,
-      onDelta: emitir
-        ? (t) => {
-            /* v3.35 — retém o começo da rodada: se ela pedir ferramenta, esse texto é
-               NARRAÇÃO e vai direto para o rastro, sem nunca ter passado pela bolha. */
-            if (!liberado) {
-              if (!retido) retidoInicio = Date.now();
-              retido += t;
-              if (retido.length > LIMITE_RETIDO || Date.now() - retidoInicio > ESPERA_RETIDO_MS) {
-                saiuTexto = true;
-                liberado = true;
-                emitido += retido;
-                emitir({ tipo: "delta", texto: retido });
-                retido = "";
+    let r: Awaited<ReturnType<typeof chamarModelo>>;
+    try {
+      r = await chamarModelo(cfg, mensagens, {
+        tools: usaFerramentas ? pacote.specs : undefined,
+        stream: Boolean(emitir),
+        /* v3.24: cada rodada traz chamadas novas — o acumulador de argumentos zera aqui */
+        onArgs: emitir
+          ? (indice, nome, pedaco) => {
+              let p = parciais.get(indice);
+              if (!p) {
+                p = { nome: "", bruto: "", emitido: 0 };
+                parciais.set(indice, p);
               }
-              return;
+              if (nome) p.nome = nome;
+              p.bruto += pedaco;
+              if (!/tela/i.test(p.nome)) return; /* só a tela interessa para o olho */
+              const html = htmlParcial(p.bruto);
+              if (html.length > p.emitido) {
+                emitir({ tipo: "codigo", texto: html.slice(p.emitido) });
+                p.emitido = html.length;
+              }
             }
-            saiuTexto = true;
-            emitido += t;
-            emitir({ tipo: "delta", texto: t });
-          }
-        : undefined,
-      /* sempre coleta (para gravar); só emite quando há tela ouvindo */
-      onRaciocinio: (t) => {
-        pensamento += t;
-        if (!bloco) bloco = { texto: t, inicio: Date.now() };
-        else bloco.texto += t;
-        emitir?.({ tipo: "raciocinio", texto: t });
-      },
-      /* v3.18 (T001): o sinal da tarefa chega até aqui — "parar" aborta a chamada em curso */
-      sinal: opts.sinal,
-      /* v3.41: a imagem colada acompanha a pergunta nas rodadas do turno — o modelo
-         precisa poder olhar de novo depois de chamar uma ferramenta. */
-      visao: imagens,
-    });
+          : undefined,
+        onDelta: emitir
+          ? (t) => {
+              /* v3.35 — retém o começo da rodada: se ela pedir ferramenta, esse texto é
+                 NARRAÇÃO e vai direto para o rastro, sem nunca ter passado pela bolha. */
+              if (!liberado) {
+                if (!retido) retidoInicio = Date.now();
+                retido += t;
+                if (retido.length > LIMITE_RETIDO || Date.now() - retidoInicio > ESPERA_RETIDO_MS) {
+                  saiuTexto = true;
+                  liberado = true;
+                  emitido += retido;
+                  emitir({ tipo: "delta", texto: retido });
+                  retido = "";
+                }
+                return;
+              }
+              saiuTexto = true;
+              emitido += t;
+              emitir({ tipo: "delta", texto: t });
+            }
+          : undefined,
+        /* sempre coleta (para gravar); só emite quando há tela ouvindo */
+        onRaciocinio: (t) => {
+          pensamento += t;
+          if (!bloco) bloco = { texto: t, inicio: Date.now() };
+          else bloco.texto += t;
+          emitir?.({ tipo: "raciocinio", texto: t });
+        },
+        /* v3.18 (T001): o sinal da tarefa chega até aqui — "parar" aborta a chamada em curso */
+        sinal: opts.sinal,
+        /* v3.41: a imagem colada acompanha a pergunta nas rodadas do turno — o modelo
+           precisa poder olhar de novo depois de chamar uma ferramenta. */
+        visao: imagens,
+      });
+    } catch (e) {
+      /* v3.67: resposta vazia não é erro de servidor — o turno segue e a tela mostra o aviso */
+      if (e instanceof RespostaVazia) break;
+      throw e;
+    }
     const pedidas = r.message.tool_calls ?? [];
     if (!emitir && r.pensamento) {
       pensamento += r.pensamento + "\n\n";
@@ -1482,16 +1498,27 @@ export async function responderChat(
     return empacotar(parcial, "parada pelo usuário — o que chegou ficou gravado", true);
   }
 
-  if (!texto) {
+  /* v3.67: resposta VAZIA (ou só espaço/quebra de linha) não pode virar bolha em branco.
+     Medido no chat do admin em 02/11: o "oi" voltou com 4 tokens de saída e zero caractere,
+     e a tela ficou vazia sem explicar nada. Sem ferramenta chamada, a causa é o provedor. */
+  const respostaLimpa = String(texto ?? "").trim();
+  if (!respostaLimpa) {
     const achado = ultimoResultadoTool(mensagens).trim();
-    texto = achado
-      ? `busquei, mas o modelo parou sem responder. O que a ferramenta achou: ${achado.slice(0, 600)}`
-      : "o modelo chamou as ferramentas mas não devolveu resposta escrita";
-    aviso =
-      aviso ??
-      (pacote.specs.length
-        ? `nem o MCP interno${cfg.mcp_interno ? " (ligado)" : " (desligado)"} nem servidor externo emprestou ferramenta que servisse para esta pergunta`
-        : "nenhuma ferramenta está ligada em Configurações → Ferramentas (MCP)");
+    if (!chamadas.length && !achado) {
+      texto = "⚠️ o modelo não devolveu resposta desta vez — toque em **tentar de novo** (ou mande a mensagem outra vez).";
+      aviso = aviso ?? "o provedor devolveu resposta vazia";
+    } else {
+      texto = achado
+        ? `busquei, mas o modelo parou sem responder. O que a ferramenta achou: ${achado.slice(0, 600)}`
+        : "o modelo chamou as ferramentas mas não devolveu resposta escrita";
+      aviso =
+        aviso ??
+        (pacote.specs.length
+          ? `nem o MCP interno${cfg.mcp_interno ? " (ligado)" : " (desligado)"} nem servidor externo emprestou ferramenta que servisse para esta pergunta`
+          : "nenhuma ferramenta está ligada em Configurações → Ferramentas (MCP)");
+    }
+  } else {
+    texto = respostaLimpa;
   }
 
   await gravarMensagens(tenant, memoria, pergunta, texto, chamadas, falas, pensamento.trim(), rastro, [...fontes], cfg.provedor, cfg.modelo, telas, anexos, Date.now() - inicio, anexosDoUsuario);
