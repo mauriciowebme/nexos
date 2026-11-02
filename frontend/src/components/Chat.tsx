@@ -537,7 +537,8 @@ export function Chat({
     definirSelecao(chave, s);
   };
   const selProvedor = provedores.find((x) => x.ativo && x.nome === sel.provedor);
-  /* v3.60: "automático" mostra para quem a conversa vai (o padrão que esta conta enxerga) */
+  /* v3.60: o padrão que esta conta enxerga. Desde v3.67.2 ele é o VALOR mostrado no
+     seletor quando a conversa não fixou ninguém (a linha "automático" saiu da lista). */
   const padraoNome =
     provedores.find((x) => x.padrao && x.ativo)?.nome ??
     (provedores.filter((x) => x.ativo).length === 1 ? provedores.filter((x) => x.ativo)[0].nome : "");
@@ -1160,13 +1161,17 @@ export function Chat({
               <div className="chat-ajustes-cab">⚙ ferramentas</div>
               {provedores.some((p) => p.ativo) && (
                 <div className="chat-ajustes-modelos" data-testid="chatModelos">
+                  {/* v3.67.2 (dono): a lista mostra SÓ os provedores disponíveis — a linha
+                      "automático — x" fantasma fazia o provider padrão aparecer duas vezes e o
+                      admin contava 3 provedores onde havia 2. Quem não escolheu nada segue o
+                      padrão escolhido em Configurações (padraoNome abaixo); escolher aqui fixa
+                      a conversa, e o "mudar" do padrão continua sendo na tela de Configurações. */}
                   <select
                     aria-label="provedor da conversa"
                     title="que serviço responde esta conversa"
-                    value={sel.provedor}
+                    value={sel.provedor || padraoNome || (provedores.find((p) => p.ativo)?.nome ?? "")}
                     onChange={(e) => mudarSelecao({ provedor: e.target.value, modelo: "" })}
                   >
-                    <option value="">automático{padraoNome ? ` — ${padraoNome}` : ""}</option>
                     {provedores.filter((p) => p.ativo).map((p) => (
                       <option key={p.id} value={p.nome}>
                         {p.nome}
