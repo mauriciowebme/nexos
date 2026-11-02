@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiErro, blobUrl, del, get, getStream, post, postStream, qs, subirAnexo } from "../services/api";
+import { ApiErro, blobUrl, del, get, getStream, post, postStream, qs, subirAnexo, cortarStreams, temFluxoAssistindo } from "../services/api";
 import { useToast } from "./Toast";
 import { mdParaHtml } from "../lib/md";
 import { TelaGerada } from "./TelaGerada";
@@ -45,9 +45,16 @@ async function bombearTarefa(
 ): Promise<Record<string, unknown> | null> {
   const busca = tenant ? "?" + qs({ tenant }) : "";
   let dados: Record<string, unknown> | null = null;
-  for (let tentativa = 0; tentativa <= 3; tentativa++) {
+  /* v3.68: a contagem de tentativas é de FALHAS SEGUIDAS sem sinal de vida. Antes, cada
+     vez que a aba voltava de segundo plano e a tela cortava o stream para revalidar o
+     status gastava uma tentativa — 4 idas e vindas matavam o turno com "sem conexão"
+     mesmo com o servidor respondendo. Stream que entregou evento = conexão saudável. */
+  let seguidas = 0;
+  for (;;) {
+    let recebeu = false;
     try {
       await getStream(`/chat/tarefa/${id}/stream${busca}`, (e) => {
+        recebeu = true;
         if (e.tipo === "fim") dados = e.dados as Record<string, unknown>;
         onEvent(e as EventoTransporte);
       });
@@ -65,12 +72,15 @@ async function bombearTarefa(
         if (t.status === "terminou") return { resposta: t.parcial, ferramentas: t.ferramentas ?? [], telas: t.telas ?? [], aviso: t.aviso ?? null };
         throw new ApiErro(0, t.aviso || "a tarefa falhou");
       }
-      if (tentativa >= 3) throw new ApiErro(0, "sem conexão com o servidor");
-      await new Promise((r) => setTimeout(r, 500 * 2 ** tentativa));
+      /* servidor respondeu o status (ou o stream entregou vida) = conexão saudável:
+         o corte foi nosso (volta de aba) ou do vigia — reata sem gastar orçamento.
+         Orçamento é só para SERVIDOR INALCANÇÁVEL de verdade. */
+      if (recebeu || t) seguidas = 0;
+      else if (++seguidas > 3) throw new ApiErro(0, "sem conexão com o servidor");
+      await new Promise((r) => setTimeout(r, 500 * 2 ** Math.min(seguidas, 3)));
       if (t) onEvent({ tipo: "parcial", texto: t.parcial }); // ressincroniza a base antes de reanexar
     }
   }
-  return dados;
 }
 
 /** traduz o que a compactação fez em uma linha honesta (nada de "resumido por IA") */
@@ -797,6 +807,36 @@ export function Chat({
     const t = setInterval(marcar, 500);
     return () => clearInterval(t);
   }, [snap.rodando, snap.inicio]);
+
+  /* v3.68 — a janela está assistindo o turno AGORA? (aba visível + stream de tarefa ligado).
+     O tique de 500 ms do cronômetro reavalia a cada volta, então o selo aparece/some sem
+     listener extra. Ao Voltar para a aba com o turno vivo, corta o stream pendurado: o
+     laço de religação trata como queda e CONSULTA O STATUS NA HORA — se a tarefa terminou
+     no vão, a resposta entra e o selo morre em ~1 s (antes esperava o vigia de 120 s). */
+  const [visivel, setVisivel] = useState(() => document.visibilityState !== "hidden");
+  useEffect(() => {
+    const aoMudar = () => {
+      const v = document.visibilityState !== "hidden";
+      setVisivel(v);
+      if (v) cortarStreams();
+    };
+    document.addEventListener("visibilitychange", aoMudar);
+    return () => document.removeEventListener("visibilitychange", aoMudar);
+  }, []);
+  /* O corte do stream na volta para a aba abre um vão de ~1 s até a religação; sem
+     margem o selo piscaria nesse intervalo. Ele só entra na tela quando a janela está
+     de fato sem assistir há 2,5 s (aba oculta, ou stream morto sem reconectar). */
+  const assistindoVivo = visivel && temFluxoAssistindo();
+  const [seloDeFundo, setSeloDeFundo] = useState(false);
+  useEffect(() => {
+    if (assistindoVivo) {
+      setSeloDeFundo(false);
+      return;
+    }
+    const desde = Date.now();
+    const t = setInterval(() => setSeloDeFundo(Date.now() - desde >= 2500), 500);
+    return () => clearInterval(t);
+  }, [assistindoVivo]);
 
   /* v3.16: transporte roda com deps vazias; o canal de "provider vivo" passa por ref
      para sempre chamar a função atual do App. */
@@ -1528,9 +1568,14 @@ export function Chat({
             campo, oposto ao enviar (ação perto do dedo, nada de reset no topo). A dica de
             teclado saiu da tela — vive no título (hover) do campo. */}
         <div className="chat-piso" id="chatPiso">
-          {rodando && (
-            <p className="chat-segundo-plano" id="chatSegundoPlano" title="a tarefa continua mesmo se você for ver outra página">
-              · trabalhando em segundo plano{naFila > 0 ? ` · ${naFila} na fila` : ""}
+          {/* v3.68 (dono): o aviso agora é honesto. Com a aba VISÍVEL e o stream assistindo
+              ao vivo, nada está em segundo plano — o trabalho aparece na tela e o selo não
+              mente por cima dela. Ele só aparece quando a janela não está acompanhando o
+              turno (aba de fundo, outra tela do app) — e com o tempo decorrido, para
+              distinguir "trabalhando" de "preso". */}
+          {rodando && seloDeFundo && (
+            <p className="chat-segundo-plano" id="chatSegundoPlano" title="a tarefa continua no servidor mesmo se você fechar a aba">
+              · trabalhando em segundo plano{espera >= 60 ? ` · ${Math.floor(espera / 60)} min` : espera > 0 ? ` · ${espera}s` : ""}{naFila > 0 ? ` · ${naFila} na fila` : ""}
             </p>
           )}
           <div className="chat-piso-linha">

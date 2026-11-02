@@ -148,12 +148,22 @@ export async function subirAnexo(
 /** POST que lê um fluxo de eventos (SSE) e chama `onEvento` para cada `data:`.
  *  Usado pelo chat com streaming; erros antes do fluxo chegam como ApiErro normal. */
 export async function postStream(caminho: string, corpo: unknown, onEvento: (e: any) => void): Promise<void> {
-  const r = await fetch(caminho, {
-    method: "POST",
-    headers: cabecalhos(true),
-    body: JSON.stringify(corpo ?? {}),
-  });
-  await lerSse(r, onEvento);
+  /* v3.68: também conta como "fluxo assistindo" — o turno com imagem colada streama AQUI
+     (sem tarefa no banco) e a janela está acompanhando: o selo de segundo plano não deve
+     aparecer por cima de uma resposta que está sendo escrita na tela. */
+  const ctl = new AbortController();
+  streamsVivos.add(ctl);
+  try {
+    const r = await fetch(caminho, {
+      method: "POST",
+      headers: cabecalhos(true),
+      body: JSON.stringify(corpo ?? {}),
+      signal: ctl.signal,
+    });
+    await lerSse(r, onEvento);
+  } finally {
+    streamsVivos.delete(ctl);
+  }
 }
 
 /** GET que lê um fluxo de eventos (SSE) — v3.3: stream reanexável da tarefa.
@@ -162,8 +172,39 @@ export async function postStream(caminho: string, corpo: unknown, onEvento: (e: 
  *  v3.64 — vigia de silêncio: se o fluxo ficar 120 s sem entregar NADA (proxy engoliu a
  *  conexão, rede mudou de torre), aborta e devolve o controle para `bombearTarefa`, que
  *  consulta o status da tarefa e reata — em vez de a tela ficar "trabalhando" para sempre. */
+/* v3.68: streams de tarefas vivos neste navegador. Voltar para a aba avisa quem está
+   pendurado para o laço de religação reconsultar o status NA HORA (antes, a tela voltada
+   de segundo plano esperava o vigia de 120 s para descobrir que a tarefa já tinha
+   terminado — e o "trabalhando em segundo plano" ficava preso). */
+const streamsVivos = new Set<AbortController>();
+
+/* v3.68: quantos fluxos de tarefa ESTÃO ASSISTINDO agora — a tela usa para chamar o
+   aviso de "segundo plano" de honesto: com stream ligado e aba visível não há nada
+   escondido, o trabalho está na tela. */
+export function temFluxoAssistindo(): boolean {
+  return streamsVivos.size > 0;
+}
+
+/* fluxos de TAREFA (religáveis): só estes são cortados na volta para a aba */
+const streamsDeTarefa = new Set<AbortController>();
+
+/** corta os fluxos de tarefa pendurados: o laço de religação revalida o status na hora.
+ *  O POST /chat/stream (turno com imagem colada) NÃO está aqui — cortá-lo mataria a
+ *  resposta sem tarefa no banco para religar. */
+export function cortarStreams(): void {
+  for (const c of streamsDeTarefa) {
+    try {
+      c.abort();
+    } catch {
+      /* já encerrado */
+    }
+  }
+}
+
 export async function getStream(caminho: string, onEvento: (e: any) => void): Promise<void> {
   const ctl = new AbortController();
+  streamsVivos.add(ctl);
+  streamsDeTarefa.add(ctl);
   let vigia: ReturnType<typeof setTimeout> | null = null;
   const armar = (): void => {
     if (vigia) clearTimeout(vigia);
@@ -178,6 +219,8 @@ export async function getStream(caminho: string, onEvento: (e: any) => void): Pr
     });
   } finally {
     if (vigia) clearTimeout(vigia);
+    streamsVivos.delete(ctl);
+    streamsDeTarefa.delete(ctl);
   }
 }
 
