@@ -1119,7 +1119,9 @@ export type SegmentoRastro =
   /** `em` (v3.34): ms desde o começo do turno em que o passo ACONTECEU — a tela ordena por ele,
    *  nunca pela ordem de chegada (é o que garante a trilha cronológica ao vivo e ao reabrir). */
   | { tipo: "pensamento"; texto: string; ms: number; em?: number }
-  | { tipo: "narracao"; texto: string; em?: number }
+  /** `vivo` (v3.72): a linha está SENDO ESCRITA agora — só existe enquanto o turno corre
+   *  (o servidor nunca grava `vivo: true`; o `fala`/`mover_resposta` fecha a linha). */
+  | { tipo: "narracao"; texto: string; em?: number; vivo?: boolean }
   | { tipo: "ferramenta"; servidor: string; nome: string; ok: boolean; ms: number; em?: number }
   /** v3.43: a pessoa falou no MEIO do turno — entra na trilha na posição em que chegou,
    *  para a interrupção não virar um balão solto depois da resposta. */
@@ -1135,6 +1137,15 @@ export type EventoChat =
   | { tipo: "ferramenta_inicio"; nome: string }
   | { tipo: "ferramenta"; servidor: string; nome: string; ok: boolean; ms: number }
   | { tipo: "fala"; texto: string }
+  /** v3.72: fecha a linha viva da narração SEM texto novo (a rodada escreveu só bloco de
+   *  ferramenta, que não é fala) — a linha provisória some em vez de ficar pendurada. */
+  | { tipo: "fala_fim" }
+  /** v3.72: pedaço de narração SENDO ESCRITA na trilha (letra a letra, dentro do rastro).
+   *  O destino (fala fixa ou resposta) chega depois, por `fala` / `mover_resposta`. */
+  | { tipo: "narracao_viva"; texto: string }
+  /** v3.72: a rodada terminou SEM ferramenta — o texto que estava sendo escrito na trilha É
+   *  a resposta: `caracteres` dizem quantos saem do rastro e passam a ser a bolha. */
+  | { tipo: "mover_resposta"; texto: string; caracteres: number }
   /** v3.42: a pessoa falou no MEIO do turno — a tela mostra que o ajuste foi encaixado */
   | { tipo: "steer"; texto: string }
   /** v3.23: tela gerada (HTML+CSS+JS) — o card com preview funcional aparece ao vivo */
@@ -1156,12 +1167,14 @@ export type EventoChat =
 const MARCA_PENSO = /^(thinking|thought|reasoning|analysis|reflex[\u00e3a]o|racioc[\u00edi]nio|vou |deixa eu |primeiro |agora vou)/i;
 const LIMITE_RASCUNHO = 160;
 
-/* v3.35 — a NARRAÇÃO nasce dentro do rastro. O texto do começo da rodada fica RETIDO: se a
- * rodada pedir ferramenta, ele é narração e entra na trilha sem nunca ter aparecido na bolha.
- * Narração é uma frase de até 12 palavras; o que passar do limite (ou demorar demais sem pedir
- * ferramenta) é resposta e passa a fluir normalmente. */
-const LIMITE_RETIDO = 140;
-const ESPERA_RETIDO_MS = 1200;
+/* v3.72 (dono 04/11) — a NARRAÇÃO nasce dentro do rastro e NÃO EXISTE mais limiar.
+ * A válvula antiga (`LIMITE_RETIDO = 140` / `ESPERA_RETIDO_MS = 1200`) tinha o defeito que o
+ * dono apontou no IA_GO e que o nexos tinha do mesmo jeito: passada a válvula, o texto era
+ * declarado resposta na hora e pintava NA BOLHA; se a ferramenta chegava depois, ele tinha que
+ * ser apagado de lá e devolvido ao rastro — a linha "aparece na resposta e pula para o rastro".
+ * Agora cada pedaço da rodada é escrito na trilha (`narracao_viva`) desde a primeira letra.
+ * A rodada se denuncia sozinha, no fim: chamou ferramenta → a linha fecha como fala; não
+ * chamou → a linha é a resposta e muda de casa (`mover_resposta`). Nada é pintado duas vezes. */
 
 /** o texto desta rodada é rascunho de raciocínio? (com ferramenta na mesa, bloco longo também) */
 function textoDeRaciocinio(texto: string, pedindoFerramenta: boolean): boolean {
@@ -1348,11 +1361,16 @@ export async function responderChat(
      ferramenta, porque rascunho de rodada não é resposta) — é o que sobrevive ao "parar".
      `fontes` (T004): nomes de documento que a ferramenta de busca devolveu nesta resposta. */
   let emitido = "";
-  /* v3.35: `retido` é o começo da rodada que ainda não foi para a tela — pode virar narração
-     (vai para o rastro) ou resposta (é liberado e passa a fluir). `liberado` fecha a decisão. */
-  let retido = "";
-  let retidoInicio = 0;
-  let liberado = false;
+  /* v3.72: estado da linha viva da narração nesta rodada. `narraViva` é o texto já escrito
+     na trilha; `narraInicio` é o relógio dela. Quando a rodada se denuncia (ferramenta →
+     fala; sem ferramenta → resposta), a linha deixa de existir e o texto ganha destino. */
+  let narraViva = "";
+  let narraInicio = 0;
+  const resetarNarracaoViva = (): void => {
+    narraViva = "";
+    narraInicio = 0;
+  };
+
   const fontes = new Set<string>();
   /* embrulho único da saída: caminho normal e caminho cancelado dizem a mesma coisa */
   const empacotar = (respostaTexto: string, avisoTexto: string | null, cancelada: boolean) => ({
@@ -1388,9 +1406,7 @@ export async function responderChat(
   for (;;) {
     if (opts.sinal?.aborted) throw new Error("cancelado-pelo-usuario");
     emitido = "";
-    retido = "";
-    retidoInicio = 0;
-    liberado = false;
+    resetarNarracaoViva();
     parciais.clear(); /* v3.24: argumentos são por rodada — índice 0 de uma rodada ≠ da outra */
     rodadas++;
     /* v3.42 — fala no meio do turno: injeta ANTES de o modelo pensar nesta rodada */
@@ -1446,23 +1462,13 @@ export async function responderChat(
           : undefined,
         onDelta: emitir
           ? (t) => {
-              /* v3.35 — retém o começo da rodada: se ela pedir ferramenta, esse texto é
-                 NARRAÇÃO e vai direto para o rastro, sem nunca ter passado pela bolha. */
-              if (!liberado) {
-                if (!retido) retidoInicio = Date.now();
-                retido += t;
-                if (retido.length > LIMITE_RETIDO || Date.now() - retidoInicio > ESPERA_RETIDO_MS) {
-                  saiuTexto = true;
-                  liberado = true;
-                  emitido += retido;
-                  emitir({ tipo: "delta", texto: retido });
-                  retido = "";
-                }
-                return;
-              }
-              saiuTexto = true;
-              emitido += t;
-              emitir({ tipo: "delta", texto: t });
+              /* v3.72 — a letra nasce na TRILHA. A rodada ainda não se denunciou, então o
+                 pedaço é escrito como narração viva, dentro do rastro: se vier ferramenta ele
+                 fica lá (fala); se não vier, ele é a resposta e muda de casa no fim da rodada.
+                 Não existe mais "pintar na bolha e apagar depois". */
+              if (!narraViva) narraInicio = Date.now();
+              narraViva += t;
+              emitir({ tipo: "narracao_viva", texto: t });
             }
           : undefined,
         /* sempre coleta (para gravar); só emite quando há tela ouvindo */
@@ -1509,8 +1515,8 @@ export async function responderChat(
         pedidas = convertidas;
         resgatou = true;
         log(`resgate: chamada escrita no texto virou ferramenta — ${nomes.join(", ")}`);
-        /* o texto já saiu para a tela em streaming: manda apagar antes de executar */
-        if (emitir) emitir({ tipo: "descartar" });
+        /* v3.72: o texto nunca chegou à bolha (nasceu na trilha) — não há o que apagar lá;
+           a linha viva fecha no `fala` abaixo, com o texto limpo dos blocos. */
       } else {
         /* chamada que não dá para executar: o bloco some da vista e a tela explica */
         aviso = aviso ?? (nomes.length
@@ -1528,11 +1534,15 @@ export async function responderChat(
     }
     fecharBloco();
     if (!pedidas.length) {
-      /* v3.35: era resposta, não narração — o que estava retido sai agora e segue fluindo */
-      if (emitir && !liberado && retido) {
+      /* v3.72: a rodada terminou SEM chamar ferramenta — o texto que estava sendo escrito na
+         trilha É a resposta: sai do rastro e passa a ser a bolha (`mover_resposta`), uma vez,
+         com a contagem exata do que já tinha sido pintado na trilha. */
+      if (emitir && narraViva) {
+        const solto = narraViva;
+        resetarNarracaoViva();
         saiuTexto = true;
-        emitir({ tipo: "delta", texto: retido });
-        retido = "";
+        emitido += solto;
+        emitir({ tipo: "mover_resposta", texto: solto, caracteres: solto.length });
       }
       /* v3.42 — a fala pode chegar depois de ele já ter concluído: em vez de perder,
          guarda o que ele disse e abre mais uma rodada só para encaixar o ajuste. */
@@ -1560,10 +1570,18 @@ export async function responderChat(
      * Para o modelo continua rascunho: o eco histórico segue sem ele. */
     const rascunho = textoDeRaciocinio(textoRodada, true);
     const falaRodada = String(textoRodada ?? "").trim();
+    /* v3.72: a linha viva da trilha É a fala — `fala` fecha aquela linha com o texto definitivo
+       (o front nunca acrescenta uma segunda). Sem texto na rodada, `fala_fim` tira a linha viva
+       da vista em vez de deixá-la pendurada. */
+    const haviaViva = Boolean(narraViva);
+    const emFala = decorrido(narraInicio || Date.now());
+    resetarNarracaoViva();
     if (falaRodada) {
       falas.push(falaRodada);
-      rastro.push({ tipo: "narracao", texto: falaRodada, em: decorrido() });
+      rastro.push({ tipo: "narracao", texto: falaRodada, em: emFala });
       emitir?.({ tipo: "fala", texto: falaRodada });
+    } else if (emitir && haviaViva) {
+      emitir({ tipo: "fala_fim" });
     } else if (emitir && saiuTexto) emitir({ tipo: "descartar" });
     if (rodadas > cfg.max_rodadas) {
       texto = rascunho ? ultimoResultadoTool(mensagens) || "" : textoRodada;

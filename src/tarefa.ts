@@ -148,6 +148,12 @@ export async function rodarTarefa(id: string, u: Usuario): Promise<void> {
         if (e.tipo === "delta") {
           parcial += String(e.texto ?? "");
           espelhar(parcial);
+        } else if (e.tipo === "mover_resposta") {
+          /* v3.72: o texto da resposta nasce na TRILHA (narracao_viva) e so entra na bolha
+             quando a rodada fecha sem ferramenta. O espelho espia a BOLHA, entao ele so ve
+             esse texto agora — quem reanexar nao replaya narração como resposta. */
+          parcial += String(e.texto ?? "");
+          espelhar(parcial);
         } else if (e.tipo === "descartar" || e.tipo === "fala") {
           parcial = "";
           /* o rascunho da rodada (que agora e FALA fixa na tela, v3.8) tem que sumir do
