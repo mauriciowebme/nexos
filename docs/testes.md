@@ -101,11 +101,16 @@ que o segredo some da tela, não que a escrita é idempotente.
 
 ## 9. Estado da suíte hoje
 
-25 blocos nomeados (o runner reporta `tests 26` porque conta o teste-raiz da suíte junto), **458 checagens**
-(somadas na saída real da rodada de 27/10/2026 — v3.24.0, exit 0),
-v1.8 33 · MCP 27 · v1.10 24 · arquivos 20 · imagem/OCR 10 · v2.7 33 · v2.8 39 · v2.9 29 ·
-v3.0 31 · v3.1 3 · v3.2 9 · v3.3 17 · v3.4 11 · v3.5 19 · v3.6 30 · v3.7 14 · v3.9 7 ·
-v3.13.1 9 · v3.15 10 · v3.8 11 · v3.18 36 · v3.19 17 · v3.23 12 · v3.24 5 · rate-limit 2.
+40 blocos nomeados (o runner reporta `tests 41` porque conta o teste-raiz da suíte junto), **621 checagens**
+(somadas na saída real da rodada de 03/11/2026 — v3.70.0, exit 0):
+v1.8 33 · MCP 27 · v3.36 MCP por conta 15 · v3.37 SO do Windows 4 · v1.10 24 · arquivos 20 · imagem/OCR 10 ·
+v2.7 painel/usuarios/chat 42 · v2.8 prompt/MCP interno/externo/rodadas/segredo 39 · v2.9 markdown/streaming/fila 29 ·
+v3.0 memória/orçamento/escopo 39 · v3.1 boot/chave repetida 3 · v3.2 silêncio 9 · v3.3 tarefa 17 · v3.4 perfis 11 ·
+v3.5 esquecimento-faxina 19 · v3.6 maquinas 30 · v3.7 chave-cliente 14 · v3.9 painel 7 · v3.13.1 cliente atravessa o deploy 9 ·
+v3.15 rastro do turno 13 · v3.8 vocab e falas 11 · v3.18 básico de chat 36 · v3.19 provedores 27 · v3.60 padrão e memória 6 ·
+v3.23 telas 12 · v3.24 código ao vivo 5 · v3.42 steering 11 · v3.43 túnel grande 5 · v3.45 arquivo grande 11 ·
+v3.46 navegador -> máquina 11 · v3.50 8 · v3.51 10 · v3.52 7 · v3.53 13 · v3.58 8 · v3.67 8 ·
+v3.69 comportamento da conta 5 · **v3.70 resgate 11** · rate-limit 2.
 
 ## 10. O que a suíte NÃO prova do rastro (T041/v3.34)
 
