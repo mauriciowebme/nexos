@@ -24,6 +24,12 @@ export type EventoTransporte =
   | { tipo: "descartar" }
   /** v3.8: fala de caminho da rodada — mostra e FICA (pedido do dono) */
   | { tipo: "fala"; texto: string }
+  /** v3.72 (dono 04/11): pedaço de narração SENDO ESCRITA dentro do rastro, letra a letra */
+  | { tipo: "narracao_viva"; texto: string }
+  /** v3.72: a rodada fechou SEM ferramenta — o texto da trilha é a resposta e muda de casa */
+  | { tipo: "mover_resposta"; texto: string; caracteres?: number }
+  /** v3.72: a linha viva da narração não deixou fala — sai da vista */
+  | { tipo: "fala_fim" }
   /** v3.34: a ferramenta COMEÇOU — abre a linha viva "Consultando X… Ns" na trilha */
   | { tipo: "ferramenta_inicio"; nome: string }
   | { tipo: "ferramenta"; servidor: string; nome: string; ok: boolean; ms: number }
@@ -55,7 +61,7 @@ export type SegmentoRastro =
   /** `em` (v3.34): ms desde o começo do turno em que o passo aconteceu — a trilha é ordenada
    *  por ele (cronologia de verdade), com `vivo`/`inicio` só do que está acontecendo agora. */
   | { tipo: "pensamento"; texto: string; ms: number; vivo?: boolean; inicio?: number; em?: number }
-  | { tipo: "narracao"; texto: string; em?: number }
+  | { tipo: "narracao"; texto: string; vivo?: boolean; inicio?: number; em?: number }
   | { tipo: "ferramenta"; servidor: string; nome: string; ok: boolean; ms: number; vivo?: boolean; inicio?: number; em?: number }
   /** v3.43: a fala que a pessoa mandou NO MEIO do turno — mora na trilha, no ponto em que chegou */
   | { tipo: "interrupcao"; texto: string; em?: number };
@@ -158,6 +164,57 @@ function acrescentarPensamento(b: Linha, pedaco: string): void {
 /** acrescenta uma linha fechada à trilha (fala de caminho ou ferramenta) */
 function acrescentar(b: Linha, s: SegmentoRastro): void {
   (b.rastro ??= []).push(s);
+}
+
+/* v3.72 (dono 04/11) — a NARRAÇÃO nasce escrita DENTRO da trilha, letra a letra, e só
+   depois muda de casa: virou fala (rodada chamou ferramenta) ou virou resposta (rodada
+   terminou sem ferramenta). Nada é pintado na bolha para depois ser apagado. */
+
+/** emenda o pedaço na linha viva da narração, ou abre a linha na trilha */
+function acrescentarNarracaoViva(b: Linha, pedaco: string, em: number): void {
+  const r = (b.rastro ??= []);
+  const ultimo = r.length ? r[r.length - 1] : null;
+  if (ultimo && ultimo.tipo === "narracao" && ultimo.vivo) ultimo.texto += pedaco;
+  else r.push({ tipo: "narracao", texto: pedaco, vivo: true, inicio: Date.now(), em });
+}
+
+/** fecha a linha viva da narração com o texto definitivo do servidor (sem duplicar a linha) */
+function fecharNarracaoViva(b: Linha, texto: string, em: number): boolean {
+  const r = b.rastro ?? [];
+  for (let i = r.length - 1; i >= 0; i--) {
+    const s = r[i];
+    if (s.tipo === "narracao" && s.vivo) {
+      if (texto) { s.texto = texto; s.em = em; }
+      s.vivo = false;
+      delete s.inicio;
+      return true;
+    }
+  }
+  return false;
+}
+
+/** a linha viva da narração não deixou fala nenhuma: sai da vista */
+function descartarNarracaoViva(b: Linha): boolean {
+  const r = b.rastro ?? [];
+  for (let i = r.length - 1; i >= 0; i--) {
+    const s = r[i];
+    if (s.tipo === "narracao" && s.vivo) { r.splice(i, 1); return true; }
+  }
+  return false;
+}
+
+/** a linha viva da narração É a resposta: sai da trilha e vira a bolha (uma vez só) */
+function moverNarracaoParaBolha(b: Linha): string {
+  const r = b.rastro ?? [];
+  for (let i = r.length - 1; i >= 0; i--) {
+    const s = r[i];
+    if (s.tipo === "narracao" && s.vivo) {
+      const texto = s.texto;
+      r.splice(i, 1);
+      return texto;
+    }
+  }
+  return "";
 }
 
 /** v3.34: a ferramenta terminou — fecha a linha que estava viva em vez de criar outra
@@ -444,16 +501,33 @@ export async function reativar(
         bolha.raciocinio = (bolha.raciocinio ?? "") + String(e.texto ?? "");
         if (bolha.raciocinioInicio === undefined) bolha.raciocinioInicio = Math.max(0, Date.now() - c.inicio);
         acrescentarPensamento(bolha, String(e.texto ?? ""));
+      } else if (e.tipo === "narracao_viva") {
+        /* v3.72: a letra nasce NA TRILHA — dentro do rastro, nunca na bolha */
+        if (bolha.raciocinio && bolha.raciocinioFim === undefined) bolha.raciocinioFim = Math.max(0, Date.now() - c.inicio);
+        fecharPensamento(bolha);
+        acrescentarNarracaoViva(bolha, String(e.texto ?? ""), Math.max(0, Date.now() - c.inicio));
+      } else if (e.tipo === "mover_resposta") {
+        /* v3.72: a rodada acabou SEM chamar ferramenta — o texto que estava sendo escrito na
+           trilha é a resposta: muda de casa uma vez (trilha -> bolha), sem reaparecer */
+        const txt = moverNarracaoParaBolha(bolha) || String(e.texto ?? "");
+        if (txt) {
+          bruto += txt; base = Math.max(0, bruto.length); bolha.texto = bruto;
+        }
+        descartarNarracaoViva(bolha);
+      } else if (e.tipo === "fala_fim") {
+        descartarNarracaoViva(bolha);
       } else if (e.tipo === "fala") {
         const txt = String(e.texto ?? "");
         if (txt) {
           falou = true;
           if (bolha.raciocinio && bolha.raciocinioFim === undefined) bolha.raciocinioFim = Math.max(0, Date.now() - c.inicio);
-          /* v3.15: a fala de caminho virou LINHA DO RASTRO (o jeito do IA_GO) — a trilha do
-             turno conta a história no mesmo lugar, em vez de soltar balão no meio da tela */
+          /* v3.15/v3.72: a fala de caminho é LINHA DO RASTRO. A linha já está viva na trilha
+             (nasceu em `narracao_viva`) — aqui ela só fecha com o texto definitivo. A bolha
+             não é tocada: o que a rodada escreveu nunca entrou nela. */
           fecharPensamento(bolha);
-          acrescentar(bolha, { tipo: "narracao", texto: txt, em: Math.max(0, Date.now() - c.inicio) });
-          bruto = ""; base = 0; bolha.texto = "";
+          if (!fecharNarracaoViva(bolha, txt, Math.max(0, Date.now() - c.inicio))) {
+            acrescentar(bolha, { tipo: "narracao", texto: txt, em: Math.max(0, Date.now() - c.inicio) });
+          }
         }
       } else if (e.tipo === "steer") {
         /* v3.43: interrupção aparece DENTRO do rastro, no ponto em que chegou — não como
@@ -593,18 +667,30 @@ async function bombeia(chave: string, memoria: string, tenant: string | undefine
         bolha.raciocinio = (bolha.raciocinio ?? "") + String(e.texto ?? "");
         if (bolha.raciocinioInicio === undefined) bolha.raciocinioInicio = Math.max(0, Date.now() - c.inicio);
         acrescentarPensamento(bolha, String(e.texto ?? ""));
+      } else if (e.tipo === "narracao_viva") {
+        /* v3.72: a letra nasce NA TRILHA — dentro do rastro, nunca na bolha */
+        if (bolha.raciocinio && bolha.raciocinioFim === undefined) bolha.raciocinioFim = Math.max(0, Date.now() - c.inicio);
+        fecharPensamento(bolha);
+        acrescentarNarracaoViva(bolha, String(e.texto ?? ""), Math.max(0, Date.now() - c.inicio));
+      } else if (e.tipo === "mover_resposta") {
+        /* v3.72: a rodada acabou SEM chamar ferramenta — o texto escrito na trilha é a
+           resposta: sai da trilha e vira a bolha, uma vez só */
+        const txt = moverNarracaoParaBolha(bolha) || String(e.texto ?? "");
+        if (txt) { bruto += txt; bolha.texto = bruto; }
+        descartarNarracaoViva(bolha);
+      } else if (e.tipo === "fala_fim") {
+        descartarNarracaoViva(bolha);
       } else if (e.tipo === "fala") {
-        /* a rodada chamou ferramenta e falou no caminho: o texto deixa de ser rascunho
-           e vira BALÃO PRÓPRIO, cravado antes da bolha viva (conversa corrida, v3.8) */
+        /* a rodada chamou ferramenta e falou no caminho: a linha já está viva na trilha
+           (v3.72) — aqui ela só fecha com o texto definitivo. A bolha não é tocada. */
         const txt = String(e.texto ?? "");
         if (txt) {
           falou = true;
           if (bolha.raciocinio && bolha.raciocinioFim === undefined) bolha.raciocinioFim = Math.max(0, Date.now() - c.inicio);
-          /* v3.15: a fala de caminho virou LINHA DO RASTRO (o jeito do IA_GO) */
           fecharPensamento(bolha);
-          acrescentar(bolha, { tipo: "narracao", texto: txt, em: Math.max(0, Date.now() - c.inicio) });
-          bruto = "";
-          bolha.texto = "";
+          if (!fecharNarracaoViva(bolha, txt, Math.max(0, Date.now() - c.inicio))) {
+            acrescentar(bolha, { tipo: "narracao", texto: txt, em: Math.max(0, Date.now() - c.inicio) });
+          }
         }
       } else if (e.tipo === "descartar") {
         bruto = "";

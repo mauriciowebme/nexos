@@ -292,10 +292,12 @@ function Rastro({
         <div className="rastro-corpo" data-testid="rastroCorpo">
           {trilha.map((s, i) => {
             if (s.tipo === "narracao") {
+              /* v3.72: a narração é ESCRITA na trilha. Enquanto a rodada não se denuncia, a
+                 linha está viva (ponto pulsando); ao fechar vira fala definitiva. */
               return (
-                <div className="rastro-linha rastro-narra" key={`n${i}`} data-testid="rastroNarracao">
-                  <i className="rastro-ponto" />
-                  <span>{s.texto}</span>
+                <div className="rastro-linha rastro-narra" key={`n${i}`} data-testid={s.vivo ? "rastroNarracaoViva" : "rastroNarracao"}>
+                  <i className={s.vivo ? "rastro-ponto animate-pulse" : "rastro-ponto"} />
+                  <span>{s.texto}{s.vivo ? "▌" : ""}</span>
                 </div>
               );
             }
