@@ -9,8 +9,9 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 
 | T### | Nome | Módulo | Prioridade | Status | Link |
 |---|---|---|---|---|---|
-| T052 | Sandbox Python com as ferramentas do nexos + biblioteca + agenda | sandbox + ferramentas | 🟠 Alta | 🟢 Etapas 1 e 2 na v3.51.0 (falta a agenda) | [#t052](#t052) |
-| T053 | Sandbox: isolamento por conta, rede pelo proxy e cota | sandbox | 🟠 Alta | 🟢 Camadas 1–5 (v3.53.0 e v3.63.0); falta a tela de bibliotecas | [#t053](#t053) |
+| — | *(nenhuma tarefa numerada em aberto)* | — | — | — | — |
+
+> T052 (sandbox Python) e T053 (isolamento do sandbox) foram **retiradas da fila por enquanto**, a pedido do dono em 04/11/2026. O que já estava entregue nelas continua no ar (v3.50.0, v3.51.0, v3.53.0, v3.63.0); o desenho e as etapas que faltavam ficam no `git log`.
 
 ## Correções já no ar
 
@@ -43,45 +44,6 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 | 3.52.0 | `analisar_imagem` baixava a imagem sem user-agent (sites exigentes, como o Wikimedia, devolviam 400) e aceitava endereço interno (dava para pedir `127.0.0.1:8001`, o embedder). Agora usa o mesmo UA de navegador do `web_open` e passa pela mesma trava de endereço interno, inclusive a cada salto de redirecionamento. | Teste de todas as 57 ferramentas (30/10), chamando cada uma de verdade. |
 
 ---
-
-### T052 — Sandbox Python com as ferramentas do nexos
-
-| Campo | Conteúdo |
-|---|---|
-| **Módulo** | sandbox (novo) + ferramentas + agenda |
-| **Prioridade** | 🟠 Alta — é o que separa "assistente que conversa" de "assistente que constrói" |
-| **Status** | 🟢 **Etapas 1 e 2 entregues** — v3.50.0 (executor + ponte) e v3.51.0 (pasta por usuário, venv e bibliotecas). Falta a agenda. |
-| **Pedido** | "a ideia seria ter tipo um sandbox pra poder o usuário pedir 'faz tal coisa' que você não consiga, aí você poderia usar o Python que conseguiria usar as ferramentas — por exemplo, faz uma busca programada na web, aí vai lá e cria um script e roda isso" |
-| **Problema que resolve** | Hoje o modelo só tem `rodar_comando` (shell cru) e uma ferramenta por vez. Quando o pedido exige repetir, comparar, testar condição ou juntar resultados, ele improvisa PowerShell/bash a cada resposta, gasta contexto e erra. Foi exatamente o que aconteceu em 30/10: para contornar o upload quebrado, o modelo tentou base64, HttpListener e certutil em vez de resolver. |
-| **Desenho** | Quatro peças. (1) **Executor**: processo separado por execução, pasta própria, teto de tempo, memória e saída; stdlib por padrão. (2) **Ponte**: dentro do sandbox existe `import nexos`, com as ferramentas do servidor e da máquina como funções (`web_search`, `web_open`, `search`, `rodar_comando`, `baixar_arquivo`, `ler_arquivo`...). Cada função checa a permissão **do usuário que pediu** — o script nunca herda mais poder que quem pediu. (3) **Biblioteca**: script aprovado vira ferramenta nomeada (descrição + parâmetros) e entra no `tools/list`; roda de novo sem gastar modelo. (4) **Agenda**: rodar sozinho (de hora em hora, todo dia) e entregar o resultado no chat. |
-| **Limites de segurança** | Sem rede direta: a internet só é alcançada pelas ferramentas, então tudo continua passando pelo mesmo controle e pelo mesmo log. `pip install` só com confirmação do operador. Sandbox liberado primeiro só para operador; liberação por usuário depois. Nada de acesso à pasta de dados do servidor. |
-| **Por que Python** | Já existe dos dois lados: servidor 3.11.18 (roda embedder e OCR) e a máquina do trabalho com 3.12.10. Se a máquina não tiver, usar o *embeddable* (zip ~11 MB) dentro da pasta de trabalho, sem admin e sem instalar no sistema. |
-| **Ganho colateral** | As ferramentas de arquivo que quebraram em 30/10 (upload em PowerShell) podem passar a usar o caminho Python, que não depende do .NET da máquina. |
-| **Prova exigida na execução** | Um pedido real que hoje falha ("busca programada na web sobre X, junta e salva"): o modelo escreve o script, roda no sandbox, o arquivo aparece e o resumo volta no chat. Depois o mesmo script vira ferramenta e roda por agenda, sem modelo. Suíte completa verde e o sandbox recusando script de usuário sem permissão. |
-
-## Etapas da T052
-
-| Etapa | O que entrega | Estado |
-|---|---|---|
-| 1. Executor + ponte | `rodar_python` no `tools/list`; `import nexos` com as ferramentas permitidas; teto de 120 s; saída cortada em 120 KB; pasta temporária apagada; rede direta bloqueada no Python | ✅ v3.50.0 |
-| 2a. Pasta + venv + bibliotecas | `/app/dados/usuarios/<conta>/` com `venv/`, `scripts/saida/`, `dependencias.txt` e `pip-cache/`; o script declara `dependencias` e o servidor instala só o que falta; teto de 2 GB por conta; pip é o único processo com rede | ✅ v3.51.0 |
-| 2b. Biblioteca de scripts | script aprovado vira ferramenta nomeada (descrição + parâmetros) e entra no `tools/list` | 📋 falta |
-| 3. Agenda | rodar sozinho (de hora em hora / todo dia) e entregar no chat | 📋 falta |
-
-**Limite conhecido da etapa 1:** o bloqueio de rede é no Python (`socket` substituído por
-`sitecustomize.py`); um script que chame `subprocess` com `curl` ainda alcança a rede. O limite
-de verdade continua sendo o container — o confinamento por processo fica na etapa 2.
-
-### T053 — Sandbox: liberdade com isolamento
-
-| Campo | Conteúdo |
-|---|---|
-| **Módulo** | sandbox |
-| **Pedido** | "o mais liberdade possível com o mais seguro possível sem vazamentos" |
-| **Entregue na v3.53.0** | (1) o script roda como **uid próprio por conta** (20000–29999, nunca root) e a pasta da conta é 700 — outra conta recebe "permissão negada"; (2) a internet passa **só pelo proxy local** (`HTTP_PROXY`/`HTTPS_PROXY`), que recusa qualquer destino interno e registra o que passou e o que foi negado; (3) **teto de memória** por `ulimit -v` (512 MB, `NEXOS_SANDBOX_MEM_MB`); (4) o retorno traz `rede` com os destinos. |
-| **Entregue na v3.63.0** | (5) o cadeado do `ctypes` saiu do Python e foi para o **kernel**: **Landlock** limita o disco (leitura no sistema, **escrita só nas pastas da conta** e no diretório do script) e **seccomp** recusa `execve`, `ptrace`, `unshare`, `setns`, `mount` — com isso **numpy, pandas e openpyxl voltam a importar** (antes morriam em `PermissionError: ctypes bloqueado`). Medido no ambiente de teste: numpy 2.5.4, pandas 3.1.0 e openpyxl 3.1.5 rodando; escrita fora da pasta e leitura de `/root` barradas pelo kernel; `web_search` pelo proxy continua funcionando. |
-| **Limite conhecido** | a **rede** ainda é orientada pelo gancho do Python (`sitecustomize`), não pelo kernel: um script que use `ctypes` para chamar `connect` por biblioteca nativa pode alcançar a rede direta (o seccomp não distingue destino, porque o argumento de `connect` é ponteiro). O **disco** e o **processo** agora são barreira de SO. Fechar a rede exige namespace ou regra por uid, e o container não tem `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` — medido: `bwrap` ausente e `unshare -U` responde "Operation not permitted". Alternativa: serviço executor separado com rede própria. |
-| **Falta** | tela do que está instalado por conta, com botão de apagar; `pip` livre com registro; agenda da T052. |
 
 ## Ideias ainda não numeradas
 
