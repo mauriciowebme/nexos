@@ -1761,11 +1761,18 @@ test("nexos v2 — suíte completa", async (t) => {
     const fluxoRes = await fluxo(TESTKEY, { pergunta: "qual o total da nota da Beta?", memoria: GAV });
     f.check("content-type é text/event-stream", /text\/event-stream/.test(fluxoRes.ctype), fluxoRes.ctype);
     const tipos = fluxoRes.eventos.map((e) => e.tipo);
-    /* v3.35: o texto da rodada que pede ferramenta é NARRAÇÃO — ele nasce no rastro, não na
-       bolha. Prova: nenhum delta antes do evento `fala` (antes, os pedaços dele apareciam). */
+    /* v3.72 (dono 04/11): o texto da rodada que pede ferramenta é NARRAÇÃO e é ESCRITA na
+       trilha (`narracao_viva`), fechada no `fala` — nunca na bolha. O ` Thinking:` do falso
+       não pode aparecer em `delta` nem em `mover_resposta`. */
     const posFala9 = tipos.indexOf("fala");
+    const posViva9 = tipos.indexOf("narracao_viva");
     const posDelta9 = tipos.indexOf("delta");
-    f.check("o texto da rodada não passa pela bolha antes da ferramenta (v3.35)", posDelta9 === -1 || posDelta9 > posFala9, tipos.join(","));
+    const vivas9 = fluxoRes.eventos.filter((e) => e.tipo === "narracao_viva").map((e) => String(e.texto ?? ""));
+    const deltas9 = fluxoRes.eventos.filter((e) => e.tipo === "delta").map((e) => String(e.texto ?? "")).join("");
+    const movidas9 = fluxoRes.eventos.filter((e) => e.tipo === "mover_resposta").map((e) => String(e.texto ?? "")).join("");
+    f.check("a narração chega escrita na trilha, em ≥2 pedaços", posViva9 >= 0 && vivas9.length >= 2 && vivas9.join("").includes("Thinking:"), JSON.stringify({ pecas: vivas9.length }));
+    f.check("o texto da rodada não passa pela bolha antes da ferramenta (v3.72)", posViva9 >= 0 && (posDelta9 === -1 || posDelta9 > posFala9), tipos.join(","));
+    f.check("nada da narração vaza para bolha: nem em delta, nem em mover_resposta", !deltas9.includes("Thinking:") && !movidas9.includes("Thinking:"), JSON.stringify({ delta: deltas9.slice(0, 60), movido: movidas9.slice(0, 60) }));
     f.check("a fala do caminho virou balão próprio antes da resposta (v3.8)", tipos.includes("fala") && !tipos.includes("descartar"), tipos.join(","));
     f.check("a chamada de ferramenta aparece ainda durante o fluxo", tipos.indexOf("ferramenta") < tipos.indexOf("fim") && tipos.includes("ferramenta"), tipos.join(","));
     f.check("o fluxo termina com fim", tipos[tipos.length - 1] === "fim", tipos[tipos.length - 1]);
@@ -1775,13 +1782,17 @@ test("nexos v2 — suíte completa", async (t) => {
     /* o reducer do navegador, replicado aqui: o que a bolha mostra ao fim do fluxo */
     let tela = "";
     const baloes: string[] = [];
+    let trilhaViva = ""; // linha viva da narração (rastro), como no `lib/conversa`
     for (const e of fluxoRes.eventos) {
       if (e.tipo === "delta") tela += String(e.texto ?? "");
+      else if (e.tipo === "narracao_viva") trilhaViva += String(e.texto ?? "");
+      else if (e.tipo === "mover_resposta") { tela += trilhaViva || String(e.texto ?? ""); trilhaViva = ""; }
+      else if (e.tipo === "fala_fim") trilhaViva = "";
+      else if (e.tipo === "fala") { baloes.push(String(e.texto ?? "")); trilhaViva = ""; }
       else if (e.tipo === "descartar") tela = "";
-      else if (e.tipo === "fala") { baloes.push(String(e.texto ?? "")); tela = ""; }
       else if (e.tipo === "fim") tela = String(e.dados?.resposta ?? tela);
     }
-    f.check("a bolha termina limpa: o que foi descartado sumiu da tela", tela === String(dados.resposta ?? "") && !/Thinking:/.test(tela), tela.slice(0, 140));
+    f.check("a bolha termina limpa: a narração escrita na trilha nunca entrou nela", tela === String(dados.resposta ?? "") && !/Thinking:/.test(tela), tela.slice(0, 140));
     const busca = (dados.ferramentas ?? [])[0] ?? {};
     f.check("a ferramenta registrada mostra o documento achado na gaveta", /suite-v29-nota/.test(String(busca.resumo ?? "")), String(busca.resumo ?? "").slice(0, 200));
     f.check("os argumentos da busca chegaram inteiros (e na gaveta certa)", busca.args?.query === "nota fiscal" && busca.args?.k === 3 && busca.args?.memoria === GAV, busca.args);
@@ -3039,12 +3050,23 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     const tool = trilha.find((s) => s.tipo === "ferramenta") ?? {};
     f.check("a linha da ferramenta diz qual foi, se deu certo e quanto demorou", tool.nome === "list_gavetas" && tool.servidor === "nexos" && tool.ok === true && Number(tool.ms) >= 0, JSON.stringify(tool).slice(0, 140));
     f.check("a fala de caminho está na trilha (não foi engolida pela resposta)", trilha.some((s) => s.tipo === "narracao" && /vou ver as gavetas/.test(String(s.texto))), String(trilha.find((s) => s.tipo === "narracao")?.texto ?? "").slice(0, 60));
-    /* v3.35 — a narração NASCE no rastro: nenhum pedaço dela pode ter passado como delta */
+    /* v3.72 (dono 04/11) — a narração é ESCRITA na trilha, letra a letra: `narracao_viva`
+       pinta dentro do rastro, `fala` fecha a linha, e a resposta muda de casa uma vez
+       (`mover_resposta`). Nenhum pedaço de texto de rodada entra na bolha antes da hora. */
     const deltasV315 = rod.eventos.filter((e: any) => e.tipo === "delta").map((e: any) => String(e.texto ?? "")).join("");
+    const vivasV315 = rod.eventos.filter((e: any) => e.tipo === "narracao_viva").map((e: any) => String(e.texto ?? ""));
     const evFala315 = rod.eventos.filter((e: any) => e.tipo === "fala");
+    const movidasV315 = rod.eventos.filter((e: any) => e.tipo === "mover_resposta");
+    f.check("NARRAÇÃO NASCE NO RASTRO: a fala chegou em pedaços de `narracao_viva` (≥2), dentro da trilha", vivasV315.length >= 2 && vivasV315.join("").includes("vou ver as gavetas"), JSON.stringify({ pecas: vivasV315.length, texto: vivasV315.join("").slice(0, 60) }));
     f.check("NARRAÇÃO NUNCA PASSA PELA BOLHA: nenhum delta carrega o texto da fala", !deltasV315.includes("vou ver as gavetas"), deltasV315.slice(0, 120) || "(nenhum delta)");
-    f.check("a fala chega como evento próprio, antes da ferramenta", evFala315.length === 1 && /vou ver as gavetas/.test(String(evFala315[0].texto)), JSON.stringify(evFala315).slice(0, 160));
-    f.check("a RESPOSTA continua fluindo como delta (o que não é fala digita)", deltasV315.includes("PRONTO-V315"), deltasV315.slice(-80));
+    f.check("a fala fecha a linha viva (evento próprio, antes da ferramenta, sem texto duplicado)", evFala315.length === 1 && /vou ver as gavetas/.test(String(evFala315[0].texto)), JSON.stringify(evFala315).slice(0, 160));
+    f.check("o texto vivo chega ANTES do fechamento e da ferramenta (ordem na trilha)", (() => {
+      const t = rod.eventos.map((e: any) => e.tipo);
+      const fimViva = t.lastIndexOf("narracao_viva");
+      return fimViva >= 0 && t.indexOf("fala") > fimViva && t.indexOf("ferramenta") > t.indexOf("fala");
+    })(), rod.eventos.map((e: any) => e.tipo).join(","));
+    f.check("SEM FERRAMENTA, A RESPOSTA MUDA DE CASA UMA VEZ: `mover_resposta` entrega o texto da trilha", movidasV315.length === 1 && String(movidasV315[0].texto ?? "").includes("PRONTO-V315") && Number(movidasV315[0].caracteres) === String(movidasV315[0].texto ?? "").length, JSON.stringify(movidasV315.map((e: any) => ({ n: e.caracteres, t: String(e.texto).slice(0, 40) }))));
+    f.check("a resposta não é despejada na bolha em pedaços antes da hora (nenhum delta carregaria fala)", !movidasV315.some((e: any) => /vou ver as gavetas/.test(String(e.texto ?? ""))) && !deltasV315.includes("vou ver as gavetas"), deltasV315.slice(0, 120));
     f.check("a resposta final NÃO é uma etapa do rastro", !trilha.some((s) => /PRONTO-V315/.test(String(s.texto ?? ""))) && String(fim.dados?.resposta ?? "").includes("PRONTO-V315"), String(fim.dados?.resposta ?? "").slice(0, 60));
 
     r = await call("GET", `/chat?memoria=${GAV}&limit=10`, { key: OPKEY });
