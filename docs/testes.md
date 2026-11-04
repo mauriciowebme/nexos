@@ -1,6 +1,6 @@
 # Testes do nexos — lacunas preenchidas pela skill canônica `suite-de-testes`
 
-> **Última atualização:** 2026-10-23 · **Dono:** Mauricio
+> **Última atualização:** 2026-11-04 · **Dono:** Mauricio
 
 Este arquivo é o que a canônica exige em cada repo (`docs/testes.md`): **qual modo, qual alvo,
 onde entra o escopo de isolamento, papéis reais, onde a versão aparece na prova de release e qual
@@ -101,8 +101,12 @@ que o segredo some da tela, não que a escrita é idempotente.
 
 ## 9. Estado da suíte hoje
 
-40 blocos nomeados (o runner reporta `tests 41` porque conta o teste-raiz da suíte junto), **621 checagens**
-(somadas na saída real da rodada de 03/11/2026 — v3.70.0, exit 0):
+41 blocos nomeados (o runner reporta `tests 42` porque conta o teste-raiz da suíte junto), **641 checagens**
+(somadas na saída real das rodadas de 04/11/2026 — v3.71.0, exit 0). A corrida inteira custa ~7 min e **estoura
+o teto de 420 s de uma chamada de terminal**: o que fecha o portão são as **duas metades** por `SO_BLOCOS`
+(17 blocos = 18 testes / 371 checagens; 24 blocos = 25 testes / 270 checagens; `fail 0` nas duas), cada uma
+precedida de `scripts/up-test.sh`. Corrida cortada no meio aparece como `tests 34 / pass 33` +
+"Promise resolution is still pending" — verde falso, refazer.
 v1.8 33 · MCP 27 · v3.36 MCP por conta 15 · v3.37 SO do Windows 4 · v1.10 24 · arquivos 20 · imagem/OCR 10 ·
 v2.7 painel/usuarios/chat 42 · v2.8 prompt/MCP interno/externo/rodadas/segredo 39 · v2.9 markdown/streaming/fila 29 ·
 v3.0 memória/orçamento/escopo 39 · v3.1 boot/chave repetida 3 · v3.2 silêncio 9 · v3.3 tarefa 17 · v3.4 perfis 11 ·
@@ -110,7 +114,7 @@ v3.5 esquecimento-faxina 19 · v3.6 maquinas 30 · v3.7 chave-cliente 14 · v3.9
 v3.15 rastro do turno 13 · v3.8 vocab e falas 11 · v3.18 básico de chat 36 · v3.19 provedores 27 · v3.60 padrão e memória 6 ·
 v3.23 telas 12 · v3.24 código ao vivo 5 · v3.42 steering 11 · v3.43 túnel grande 5 · v3.45 arquivo grande 11 ·
 v3.46 navegador -> máquina 11 · v3.50 8 · v3.51 10 · v3.52 7 · v3.53 13 · v3.58 8 · v3.67 8 ·
-v3.69 comportamento da conta 5 · **v3.70 resgate 11** · rate-limit 2.
+v3.69 comportamento da conta 5 · v3.70 resgate 11 · **v3.71 settings nos lugares certos 20** · rate-limit 2.
 
 ## 10. O que a suíte NÃO prova do rastro (T041/v3.34)
 
