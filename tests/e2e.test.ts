@@ -4604,6 +4604,102 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.fechar("v3.69 comportamento da conta");
   });
 
+  await bloco(t, "v3.70 resgate: chamada escrita no texto vira ferramenta", async () => {
+    const f = fiscal();
+    const CONTAINER = process.env.CONTAINER ?? "";
+    const DB = process.env.DBCONTAINER ?? "";
+    const GAV = "suite-v370";
+    if (!CONTAINER || !DB) {
+      f.check("v3.70 precisa do container e do banco (provedor falso e linha do provedor)", true, "sem CONTAINER/DBCONTAINER: bloco não executável");
+      f.fechar("v3.70 resgate (parcial)");
+      return;
+    }
+    const psql = (sql: string) =>
+      execFileSync("docker", ["exec", DB, "sh", "-c", `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "${sql}"`], { encoding: "utf8" }).trim();
+
+    /* o texto REAL que quebrou em 03/11 23:27 (13,9 mil caracteres de HTML dentro de
+       `<function=show_tela>`) e um bloco de nome que não existe — os dois casos do resgate */
+    execFileSync("docker", ["cp", join(process.cwd(), "tests", "fixtures", "tela-em-texto.txt"), `${CONTAINER}:/tmp/v370-tela.txt`]);
+    const inventada = "Vou usar uma ferramenta que nao existe.\n\n<tool_call>\n<function=inventada_xyz>\n<parameter=foo>\nbar\n</parameter>\n</function>\n</tool_call>\n";
+    execFileSync("docker", ["exec", "-i", CONTAINER, "sh", "-c", "cat > /tmp/v370-inventada.txt"], { input: inventada });
+
+    const codFake = [
+      "const http=require('http'),fs=require('fs');",
+      "const quebrado=fs.readFileSync('/tmp/v370-tela.txt','utf8');",
+      "const inventada=fs.readFileSync('/tmp/v370-inventada.txt','utf8');",
+      "const s=http.createServer((req,res)=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{",
+      "let j={};try{j=JSON.parse(b||'{}');}catch(e){}",
+      "const m=j.messages||[];const temResultado=m.some(x=>x.role==='tool');",
+      "const texto=temResultado?'Pronto — a tela foi exibida.':((j.model||'').indexOf('inventada')>=0?inventada:quebrado);",
+      "if(j.stream){res.setHeader('content-type','text/event-stream');",
+      "res.write('data: '+JSON.stringify({choices:[{delta:{content:texto}}]})+'\\n\\n');",
+      "res.write('data: [DONE]\\n\\n');return res.end();}",
+      "res.setHeader('content-type','application/json');",
+      "res.end(JSON.stringify({choices:[{message:{role:'assistant',content:texto},finish_reason:'stop'}]}));",
+      "});});s.listen(9915,'127.0.0.1');setTimeout(()=>process.exit(0),240000);",
+    ].join("");
+    execFileSync("docker", ["exec", "-d", CONTAINER, "node", "-e", codFake]);
+    await dormir(1200);
+
+    const linha = (nome: string, modelo: string) =>
+      `('*','${nome}','openai','http://127.0.0.1:9915/v1','','${modelo}',0.2,'',true,4,true,false,true,32768,0,0,2048)`;
+    psql(`DELETE FROM provedores WHERE nome IN ('suite-v370','suite-v370inv')`);
+    psql(`INSERT INTO provedores (escopo,nome,tipo,base_url,chave,modelo,temperatura,system_prompt,mcp_interno,max_rodadas,ativo,padrao,publico,contexto_tokens,memoria_turnos,verbatim_turnos,reserva_tokens) VALUES ${linha("suite-v370", "tela")},${linha("suite-v370inv", "inventada")}`);
+
+    console.log("-- /chat com a tela escrita como texto");
+    let r = await call("POST", "/chat", { key: TESTKEY, corpo: { pergunta: "mostre a tela", memoria: GAV, provedor: "suite-v370" } });
+    const dados = r.json ?? {};
+    const resposta = String(dados.resposta ?? "");
+    f.check("/chat respondeu 200", r.status === 200, r.status + " " + r.texto.slice(0, 160));
+    f.check("a chamada escrita no texto NÃO aparece na resposta", !/<tool_call>|<function=|DOCTYPE/.test(resposta), resposta.slice(0, 160));
+    f.check("a tela foi criada de verdade (card com o HTML inteiro)", (dados.telas ?? []).length === 1 && String(dados.telas[0].html ?? "").length > 10000, (dados.telas ?? []).map((x: any) => String(x.html ?? "").length));
+    f.check("o log da ferramenta mostra o nome REAL (mostrar_tela)", dados.ferramentas?.[0]?.nome === "mostrar_tela" && dados.ferramentas?.[0]?.ok === true, dados.ferramentas?.[0]);
+    f.check("o turno seguiu depois da ferramenta (2 rodadas)", dados.rodadas === 2, dados.rodadas);
+
+    console.log("-- /chat/stream: o texto vazado sai da bolha");
+    const respFluxo = await fetch(`${BASE}/chat/stream`, {
+      method: "POST",
+      headers: { authorization: "B" + "earer " + TESTKEY, "content-type": "application/json" },
+      body: JSON.stringify({ pergunta: "mostre a tela no fluxo", memoria: GAV, provedor: "suite-v370" }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const brutoFluxo = await respFluxo.text();
+    const eventos = brutoFluxo
+      .split("\n\n")
+      .map((b) => b.split("\n").find((l) => l.startsWith("data:")))
+      .filter((l): l is string => !!l)
+      .map((l) => {
+        try {
+          return JSON.parse(l.replace(/^data:\s*/, ""));
+        } catch {
+          return {};
+        }
+      });
+    const fluxoRes = { eventos };
+    const tipos = fluxoRes.eventos.map((e) => e.tipo);
+    const dadosFim = fluxoRes.eventos.find((e) => e.tipo === "fim")?.dados ?? {};
+    f.check("o resgate avisa a tela para apagar o texto vazado", tipos.includes("descartar"), tipos.join(","));
+    f.check("o card da tela nasce no fluxo", tipos.includes("tela") && (dadosFim.telas ?? []).length === 1, tipos.join(","));
+    let bolha = "";
+    for (const e of fluxoRes.eventos) {
+      if (e.tipo === "delta") bolha += String(e.texto ?? "");
+      else if (e.tipo === "descartar" || e.tipo === "fala") bolha = "";
+      else if (e.tipo === "fim") bolha = String(e.dados?.resposta ?? bolha);
+    }
+    f.check("a bolha termina sem HTML (só a resposta)", !/DOCTYPE|<tool_call>/.test(bolha) && bolha.length > 0, bolha.slice(0, 160));
+
+    console.log("-- nome que não existe: bloco descartado com aviso");
+    r = await call("POST", "/chat", { key: TESTKEY, corpo: { pergunta: "ferramenta inventada", memoria: GAV, provedor: "suite-v370inv" } });
+    const d2 = r.json ?? {};
+    f.check("nada de código na resposta", !/<tool_call>|<function=/.test(String(d2.resposta ?? "")), String(d2.resposta ?? "").slice(0, 160));
+    f.check("a tela avisa que o bloco foi descartado", /não existe|descartado/i.test(String(d2.aviso ?? "")), d2.aviso);
+    f.check("nenhuma tela criada no caso do nome desconhecido", (d2.telas ?? []).length === 0, (d2.telas ?? []).length);
+
+    psql(`DELETE FROM provedores WHERE nome IN ('suite-v370','suite-v370inv')`);
+    execFileSync("docker", ["exec", String(CONTAINER), "sh", "-c", pkill(9915)], { stdio: "ignore" });
+    f.fechar("v3.70 resgate");
+  });
+
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {
     const f = fiscal();
     for (let i = 0; i < 10; i++) {

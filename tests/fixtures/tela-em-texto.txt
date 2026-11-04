@@ -1,0 +1,193 @@
+Painel pronto com dados reais. Vou montar a tela interativa que busca o PTAX direto da API do Banco Central no navegador.
+
+<tool_call>
+<function=show_tela>
+<parameter=titulo>
+USD/BRL · Bandas de Bollinger (PTAX real do Banco Central)
+</parameter>
+<parameter=html>
+<!DOCTYPE html>
+<html lang="pt-BR"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>USD/BRL · Bollinger</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+ body{font-family:Inter,sans-serif;background:#0b0f17;color:#e6edf7;margin:0}
+ .mono{font-family:'JetBrains Mono',monospace}
+ .card{background:#111827;border:1px solid #1f2a3a;border-radius:14px}
+ .chip{border:1px solid #1f2a3a;border-radius:999px;padding:6px 12px;font-size:12px;cursor:pointer;transition:.15s;background:transparent;color:#cbd5e1}
+ .chip:hover{background:#16202e}.chip.on{background:#1d4ed8;border-color:#2563eb;color:#fff}
+ .up{color:#34d399}.dn{color:#f87171}
+ table{width:100%;font-size:13px;border-collapse:collapse}
+ th{color:#7d8ba1;font-weight:500;text-align:left;padding:8px 10px;border-bottom:1px solid #1f2a3a;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+ td{padding:7px 10px;border-bottom:1px solid #16202e}
+ tr:hover td{background:#16202e}
+ .bar{height:6px;border-radius:3px;background:#1f2a3a;position:relative;overflow:hidden}
+ .bar>i{position:absolute;top:0;bottom:0;border-radius:3px}
+ #load{display:flex;align-items:center;gap:10px;color:#7d8ba1;font-size:14px;padding:40px 0}
+ .sp{width:18px;height:18px;border:2px solid #2563eb;border-top-color:transparent;border-radius:50%;animation:s 1s linear infinite}
+ @keyframes s{to{transform:rotate(360deg)}}
+</style></head>
+<body class="p-5 md:p-8">
+<div class="max-w-6xl mx-auto">
+ <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
+  <div>
+   <div class="flex items-center gap-2 text-xs text-slate-400 mb-1"><i data-lucide="database" class="w-4 h-4"></i> API Olinda · Banco Central do Brasil · PTAX venda</div>
+   <h1 class="text-2xl md:text-3xl font-bold">USD/BRL <span class="text-slate-500 font-normal text-lg">+ Bandas de Bollinger (20, 2σ)</span></h1>
+   <div class="text-sm text-slate-400 mt-1">último pregão <span class="mono" id="ultData">—</span> · <span id="nDias">—</span> dias úteis</div>
+  </div>
+  <div class="flex gap-2 flex-wrap items-center">
+   <div id="per">
+    <button class="chip" data-n="63">3M</button><button class="chip" data-n="126">6M</button>
+    <button class="chip on" data-n="252">12M</button><button class="chip" data-n="9999">Tudo</button>
+   </div>
+   <button class="chip" id="re"><i data-lucide="refresh-cw" class="w-3 h-3 inline"></i></button>
+  </div>
+ </div>
+
+ <div id="load"><div class="sp"></div>baixando a série do Banco Central…</div>
+
+ <div id="app" class="hidden">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+   <div class="card p-4"><div class="text-xs text-slate-400 mb-1">Fechamento</div><div class="text-2xl font-bold mono" id="kPx"></div><div class="text-xs mono mt-1" id="kVar"></div></div>
+   <div class="card p-4"><div class="text-xs text-slate-400 mb-1">%B (posição na banda)</div><div class="text-2xl font-bold mono" id="kB"></div><div class="text-xs text-slate-400 mt-1" id="kBs"></div></div>
+   <div class="card p-4"><div class="text-xs text-slate-400 mb-1">Largura da banda</div><div class="text-2xl font-bold mono" id="kW"></div><div class="text-xs text-slate-400 mt-1" id="kWs"></div></div>
+   <div class="card p-4"><div class="text-xs text-slate-400 mb-1">Média móvel 20</div><div class="text-2xl font-bold mono" id="kSma"></div><div class="text-xs mono mt-1" id="kMed"></div></div>
+  </div>
+
+  <div class="card p-4 mb-4">
+   <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+    <div class="font-semibold">Preço × Bandas</div>
+    <div class="flex gap-4 text-xs text-slate-400 flex-wrap">
+     <span><span class="inline-block w-3 h-[3px] bg-sky-400 align-middle mr-1"></span>PTAX</span>
+     <span><span class="inline-block w-3 h-[3px] bg-amber-400 align-middle mr-1"></span>SMA 20</span>
+     <span><span class="inline-block w-3 h-3 bg-indigo-500/25 border border-indigo-400/50 align-middle mr-1"></span>±2σ</span>
+    </div>
+   </div>
+   <div style="height:340px"><canvas id="g1"></canvas></div>
+  </div>
+
+  <div class="grid md:grid-cols-2 gap-3 mb-4">
+   <div class="card p-4"><div class="font-semibold mb-1">%B — 0 = banda inferior, 1 = superior</div><div style="height:170px"><canvas id="g2"></canvas></div></div>
+   <div class="card p-4"><div class="font-semibold mb-1">Largura da banda (% da média) — estreita = squeeze</div><div style="height:170px"><canvas id="g3"></canvas></div></div>
+  </div>
+
+  <div class="card p-4 mb-4">
+   <div class="font-semibold mb-3">Leitura do momento</div>
+   <ul class="text-sm text-slate-300 space-y-2" id="leitura"></ul>
+  </div>
+
+  <div class="card p-4">
+   <div class="font-semibold mb-3">Últimos 12 pregões</div>
+   <div class="overflow-x-auto"><table><thead><tr><th>Data</th><th>PTAX</th><th>Sup.</th><th>Média</th><th>Inf.</th><th>%B</th><th>Posição</th></tr></thead><tbody id="tb"></tbody></table></div>
+  </div>
+  <div class="text-xs text-slate-500 mt-4">Banda = média simples de 20 dias ± 2 desvios-padrão populacionais, calculada no seu navegador a partir do PTAX oficial (cotação de venda). %B = (preço − banda inferior) ÷ (banda superior − banda inferior). Dados reais, não simulação.</div>
+ </div>
+ <div id="erro" class="hidden card p-5 text-sm"></div>
+</div>
+
+<script>
+const fmt=v=>'R$ '+v.toFixed(4).replace('.',',');
+const pad=n=>String(n).padStart(2,'0');
+function url(a,b){
+ const f=d=>`${pad(d.getMonth()+1)}-${pad(d.getDate())}-${d.getFullYear()}`;
+ return "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@dataInicial='"+f(a)+"'&@dataFinalCotacao='"+f(b)+"'&$top=100&$format=json&$select=cotacaoCompra,cotacaoVenda,dataHoraCotacao";
+}
+async function baixar(dias){
+ const map={}; let fim=new Date();
+ const j=[];
+ for(let i=0;i<Math.ceil(dias/90);i++){const ini=new Date(fim.getTime()-90*864e5);j.push([ini,fim]);fim=new Date(ini.getTime()-864e5);}
+ for(const [a,b] of j.reverse()){
+  const r=await fetch(url(a,b)); if(!r.ok) throw new Error('HTTP '+r.status);
+  const d=await r.json();
+  for(const v of d.value) map[v.dataHoraCotacao.slice(0,10)]=v.cotacaoVenda;
+ }
+ const datas=Object.keys(map).sort();
+ return {d:datas.map(x=>x.slice(2)), px:datas.map(x=>+map[x])};
+}
+function bandas(px,N=20,K=2){
+ const sma=[],up=[],lo=[],w=[],b=[];
+ for(let i=0;i<px.length;i++){
+  if(i+1<N){sma.push(null);up.push(null);lo.push(null);w.push(null);b.push(null);continue;}
+  const j=px.slice(i-N+1,i+1); const m=j.reduce((a,c)=>a+c,0)/N;
+  const s=Math.sqrt(j.reduce((a,c)=>a+(c-m)**2,0)/N);
+  sma.push(m);up.push(m+K*s);lo.push(m-K*s);w.push((2*K*s)/m*100);b.push((px[i]-(m-K*s))/(2*K*s));
+ }
+ return {sma,up,lo,w,b};
+}
+let D,B,c1,c2,c3;
+Chart.defaults.color='#7d8ba1';Chart.defaults.font.family='Inter';Chart.defaults.font.size=11;
+const grid={color:'#16202e'};
+function slice(n){const s=Math.max(0,D.d.length-n);const c=a=>a.slice(s);return {d:c(D.d),px:c(D.px),sma:c(B.sma),up:c(B.up),lo:c(B.lo),b:c(B.b),w:c(B.w)};}
+function draw(n){
+ const s=slice(n);
+ const all=[...s.px,...s.up.filter(x=>x),...s.lo.filter(x=>x)];
+ const mn=Math.min(...all)*0.995,mx=Math.max(...all)*1.005;
+ if(c1){c1.destroy();c2.destroy();c3.destroy();}
+ c1=new Chart(document.getElementById('g1'),{type:'line',data:{labels:s.d,datasets:[
+  {label:'sup',data:s.up,borderColor:'rgba(129,140,248,.55)',borderWidth:1,pointRadius:0,fill:'+1',backgroundColor:'rgba(99,102,241,.16)',tension:.2},
+  {label:'inf',data:s.lo,borderColor:'rgba(129,140,248,.55)',borderWidth:1,pointRadius:0,fill:false,tension:.2},
+  {label:'sma',data:s.sma,borderColor:'#fbbf24',borderWidth:1.4,borderDash:[5,4],pointRadius:0,fill:false,tension:.2},
+  {label:'PTAX',data:s.px,borderColor:'#38bdf8',borderWidth:2,pointRadius:0,fill:false,tension:.15}]},
+  options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+   plugins:{legend:{display:false},tooltip:{backgroundColor:'#0b0f17',borderColor:'#1f2a3a',borderWidth:1,padding:10,
+    callbacks:{title:i=>'20'+i[0].label,label:c=>({sup:'Banda superior',inf:'Banda inferior',sma:'Média 20',PTAX:'PTAX venda'}[c.dataset.label]+': R$ '+c.parsed.y.toFixed(4))}}},
+   scales:{x:{grid:{display:false},ticks:{maxTicksLimit:10}},y:{min:mn,max:mx,grid,ticks:{callback:v=>'R$ '+v.toFixed(2)}}}}});
+ c2=new Chart(document.getElementById('g2'),{type:'line',data:{labels:s.d,datasets:[{data:s.b,borderColor:'#a78bfa',borderWidth:1.6,pointRadius:0,fill:'origin',backgroundColor:'rgba(167,139,250,.14)',tension:.2}]},
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>'%B: '+c.parsed.y.toFixed(2)}}},
+   scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6}},y:{min:-0.3,max:1.5,grid,ticks:{stepSize:0.5}}}}});
+ c3=new Chart(document.getElementById('g3'),{type:'bar',data:{labels:s.d,datasets:[{data:s.w,backgroundColor:s.w.map(x=>x&&x<4?'rgba(251,191,36,.7)':'rgba(56,189,248,.5)'),borderRadius:2}]},
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>'largura: '+c.parsed.y.toFixed(2)+'%'}}},
+   scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6}},y:{grid,ticks:{callback:v=>v+'%'}}}}});
+}
+function kpis(){
+ const N=D.d.length,i=N-1,px=D.px[i],b=B.b[i],w=B.w[i],sma=B.sma[i],up=B.up[i],lo=B.lo[i];
+ document.getElementById('ultData').textContent='20'+D.d[i];document.getElementById('nDias').textContent=N;
+ document.getElementById('kPx').textContent=fmt(px);
+ const v1=(px/D.px[i-1]-1)*100,v30=(px/D.px[i-21]-1)*100,v12=(px/D.px[Math.max(0,i-252)]-1)*100;
+ document.getElementById('kVar').innerHTML=`<span class="${v1>=0?'up':'dn'}">${v1>=0?'+':''}${v1.toFixed(2)}% dia</span> · <span class="${v30>=0?'up':'dn'}">${v30>=0?'+':''}${v30.toFixed(2)}% 30d</span>`;
+ document.getElementById('kB').textContent=b.toFixed(2);
+ document.getElementById('kBs').textContent=b>1?'acima da banda superior':b>0.8?'colada na banda superior':b>0.5?'metade superior':b>0.2?'metade inferior':b>0?'colada na banda inferior':'abaixo da banda inferior';
+ document.getElementById('kW').textContent=w.toFixed(2)+'%';
+ const ws=B.w.filter(x=>x).sort((a,b)=>a-b),pc=Math.round(ws.filter(x=>x<w).length/ws.length*100);
+ document.getElementById('kWs').textContent='percentil '+pc+' da série';
+ document.getElementById('kSma').textContent=fmt(sma);
+ document.getElementById('kMed').textContent='amplitude '+(up-lo).toFixed(3)+' reais';
+ const mx=Math.max(...D.px),mn=Math.min(...D.px);
+ document.getElementById('leitura').innerHTML=[
+  `<b class="up">${fmt(px)}</b> está <b>${((px/lo-1)*100).toFixed(1)}%</b> acima da banda inferior (${fmt(lo)}) e a <b>${((1-px/up)*100).toFixed(2)}%</b> da superior (${fmt(up)}) — %B ${b.toFixed(2)}.`,
+  `A banda abriu para <b>${w.toFixed(2)}%</b> da média (${pc}º percentil da série): volatilidade alta, típica de tendência em curso — não de consolidação.`,
+  `No histórico baixado, o pico foi <b>${fmt(mx)}</b> e o piso <b>${fmt(mn)}</b>; o preço atual está ${(((px-mx)/mx)*100).toFixed(1)}% do topo e ${(((px-mn)/mn)*100).toFixed(1)}% acima do fundo.`,
+  `Em 12 meses: <b class="${v12>=0?'up':'dn'}">${v12>=0?'+':''}${v12.toFixed(2)}%</b>. Banda larga + %B perto de 1 = rompimento em andamento; reversão pediria fechamento de volta abaixo da média de 20 dias.`
+ ].map(x=>`<li class="flex gap-2"><i data-lucide="chevron-right" class="w-4 h-4 text-sky-400 shrink-0 mt-0.5"></i><span>${x}</span></li>`).join('');
+ let rows='';
+ for(let k=N-12;k<N;k++){
+  const bb=B.b[k],pos=Math.max(0,Math.min(1,bb))*100,cor=bb>0.8?'#f87171':bb<0.2?'#34d399':'#38bdf8';
+  rows+=`<tr><td class="mono">20${D.d[k]}</td><td class="mono font-semibold">${D.px[k].toFixed(4)}</td><td class="mono text-slate-400">${B.up[k].toFixed(4)}</td><td class="mono text-slate-400">${B.sma[k].toFixed(4)}</td><td class="mono text-slate-400">${B.lo[k].toFixed(4)}</td><td class="mono">${bb.toFixed(2)}</td><td style="min-width:110px"><div class="bar"><i style="left:0;width:${pos}%;background:${cor}"></i></div></td></tr>`;
+ }
+ document.getElementById('tb').innerHTML=rows;
+}
+async function start(){
+ document.getElementById('load').classList.remove('hidden');document.getElementById('app').classList.add('hidden');document.getElementById('erro').classList.add('hidden');
+ try{
+  D=await baixar(730);
+  if(D.px.length<40) throw new Error('série curta demais');
+  B=bandas(D.px);kpis();draw(252);
+  document.getElementById('load').classList.add('hidden');document.getElementById('app').classList.remove('hidden');lucide.createIcons();
+ }catch(e){
+  document.getElementById('load').classList.add('hidden');
+  const d=document.getElementById('erro');d.classList.remove('hidden');
+  d.innerHTML='<b>Não consegui falar com a API do Banco Central deste navegador.</b><br><span class="text-slate-400">'+e.message+' — o bloqueio costuma ser de CORS ou rede. Use o arquivo anexado na conversa: ele traz a mesma série embutida e funciona sem internet.</span>';
+  lucide.createIcons();
+ }
+}
+document.querySelectorAll('#per .chip[data-n]').forEach(c=>c.onclick=()=>{document.querySelectorAll('#per .chip[data-n]').forEach(x=>x.classList.remove('on'));c.classList.add('on');draw(+c.dataset.n);});
+document.getElementById('re').onclick=start;
+start();
+</script></body></html>
+</parameter>
+</function>
+</tool_call>

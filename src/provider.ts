@@ -27,6 +27,8 @@ import {
   paraTexto,
   resumirSaida,
 } from "./ferramentas";
+/* v3.70 — chamada de ferramenta que o modelo escreveu no TEXTO em vez de usar tool_calls */
+import { chamadasNoTexto, nomeReal, semBlocos, temBloco } from "./resgate";
 
 /** v3.67 — o provedor respondeu 200 sem texto e sem ferramenta: é resposta vazia, não erro de rota.
  * Vira aviso na tela (o chat do admin ficou com bolha em branco em 02/11 por causa disto). */
@@ -1398,7 +1400,42 @@ export async function responderChat(
       if (e instanceof RespostaVazia) break;
       throw e;
     }
-    const pedidas = r.message.tool_calls ?? [];
+    let pedidas = r.message.tool_calls ?? [];
+    /* v3.70 — resgate: o modelo escreveu a chamada no TEXTO em vez de usar `tool_calls`.
+       Caso real de 03/11/2026: `<function=show_tela>` com 13,8 mil caracteres de HTML
+       indo parar na conversa. Só age quando a rodada NÃO trouxe chamada estruturada —
+       o caminho normal (tool_calls) não muda. */
+    let textoRodada = r.texto;
+    let resgatou = false;
+    if (!pedidas.length && temBloco(String(r.texto ?? ""))) {
+      const achadas = chamadasNoTexto(r.texto);
+      const convertidas: ChamadaTool[] = [];
+      const nomes: string[] = [];
+      for (const a of achadas) {
+        const real = nomeReal(a.nome, (n) => pacote.rotas.has(n));
+        if (!real) { nomes.push(`${a.nome} (desconhecida)`); continue; }
+        convertidas.push({
+          id: `resgate_${rodadas}_${convertidas.length}`,
+          type: "function",
+          function: { name: real, arguments: JSON.stringify(a.args) },
+        });
+        nomes.push(real === a.nome ? real : `${a.nome} → ${real}`);
+      }
+      textoRodada = semBlocos(r.texto);
+      if (convertidas.length) {
+        pedidas = convertidas;
+        resgatou = true;
+        log(`resgate: chamada escrita no texto virou ferramenta — ${nomes.join(", ")}`);
+        /* o texto já saiu para a tela em streaming: manda apagar antes de executar */
+        if (emitir) emitir({ tipo: "descartar" });
+      } else {
+        /* chamada que não dá para executar: o bloco some da vista e a tela explica */
+        aviso = aviso ?? (nomes.length
+          ? `o modelo escreveu em texto uma chamada de ferramenta que não existe (${nomes.join(", ")}) — bloco descartado`
+          : "o modelo escreveu em texto uma chamada de ferramenta incompleta — bloco descartado");
+        log(`resgate: chamada descartada — ${nomes.join(", ") || "bloco incompleto"}`);
+      }
+    }
     if (!emitir && r.pensamento) {
       pensamento += r.pensamento + "\n\n";
       /* sem streaming não dá para medir quanto tempo foi pensamento: grava sem tempo e a
@@ -1418,9 +1455,9 @@ export async function responderChat(
          guarda o que ele disse e abre mais uma rodada só para encaixar o ajuste. */
       const ultimas = opts.falas?.() ?? [];
       if (ultimas.length) {
-        if (r.texto) {
-          partes.push(r.texto);
-          mensagens.push({ role: "assistant", content: r.texto });
+        if (textoRodada) {
+          partes.push(textoRodada);
+          mensagens.push({ role: "assistant", content: textoRodada });
         }
         for (const fala of ultimas) {
           mensagens.push({
@@ -1432,27 +1469,30 @@ export async function responderChat(
         }
         continue;
       }
-      texto = partes.length ? [...partes, r.texto].filter(Boolean).join("\n\n") : r.texto;
+      texto = partes.length ? [...partes, textoRodada].filter(Boolean).join("\n\n") : textoRodada;
       break;
     }
     /* a rodada chamou ferramenta: o texto dela NÃO é a resposta — mas é FALA DE
      * CAMINHO (v3.8, pedido do dono): mostra e FICA na tela como balão próprio.
      * Para o modelo continua rascunho: o eco histórico segue sem ele. */
-    const rascunho = textoDeRaciocinio(r.texto, true);
-    const falaRodada = String(r.texto ?? "").trim();
+    const rascunho = textoDeRaciocinio(textoRodada, true);
+    const falaRodada = String(textoRodada ?? "").trim();
     if (falaRodada) {
       falas.push(falaRodada);
       rastro.push({ tipo: "narracao", texto: falaRodada, em: decorrido() });
       emitir?.({ tipo: "fala", texto: falaRodada });
     } else if (emitir && saiuTexto) emitir({ tipo: "descartar" });
     if (rodadas > cfg.max_rodadas) {
-      texto = rascunho ? ultimoResultadoTool(mensagens) || "" : r.texto;
+      texto = rascunho ? ultimoResultadoTool(mensagens) || "" : textoRodada;
       aviso = `o modelo ainda queria ferramenta e bateu o limite de ${cfg.max_rodadas} rodadas`;
       break;
     }
     /* devolve ao histórico SEM o rascunho e SEM os campos internos de pensamento —
      * se voltassem no contexto, o modelo repetiria o raciocínio na resposta final */
-    const eco: Record<string, unknown> = { ...r.message, content: rascunho ? "" : r.texto };
+    const eco: Record<string, unknown> = { ...r.message, content: rascunho ? "" : textoRodada };
+    /* v3.70: chamada resgatada do texto precisa voltar ao histórico como chamada de verdade,
+       senão o modelo não vê que ela foi executada e repete o bloco na rodada seguinte. */
+    if (resgatou) eco.tool_calls = pedidas;
     delete eco.reasoning_content;
     delete eco.reasoning;
     delete eco.thinking;
