@@ -2178,8 +2178,14 @@ test("nexos v2 — suíte completa", async (t) => {
 
     /* limpeza: desliga e devolve o silêncio ao padrão do sistema */
     await call("PUT", "/config/provider", { key: OPKEY, corpo: { ...baseV32, modelo: "goteja", silencio_s: 0, ativo: false } });
-    r = await call("GET", "/config/provider", { key: OPKEY });
-    f.check("limpeza: silêncio voltou ao padrão (180s) e o provedor falso desligou", r.json?.silencio_s === 0 && r.json?.silencio_efetivo_s === 180 && r.json?.ativo === false, { s: r.json?.silencio_s, e: r.json?.silencio_efetivo_s, a: r.json?.ativo });
+    /* v3.71: a checagem olha A LINHA que este bloco escreveu (GET /provedores). O painel
+       (GET /config/provider) agora mostra os números da linha que ATENDE o chat — com este
+       provedor desligado, o painel passaria a mostrar a linha padrão de outro bloco, que não é
+       o que esta limpeza quer provar. Mesma intenção, alvo certo. */
+    const linhaV32 = (await call("GET", "/provedores", { key: OPKEY })).json?.provedores?.find((x: any) => /goteja/i.test(String(x.nome)));
+    f.check("limpeza: a linha do provedor falso voltou ao silêncio padrão (0) e ficou desligada", Number(linhaV32?.silencio_s) === 0 && linhaV32?.ativo === false, {
+      silencio: linhaV32?.silencio_s, ativo: linhaV32?.ativo,
+    });
     f.fechar("v3.2 silêncio");
   });
 
@@ -4698,6 +4704,138 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     psql(`DELETE FROM provedores WHERE nome IN ('suite-v370','suite-v370inv')`);
     execFileSync("docker", ["exec", String(CONTAINER), "sh", "-c", pkill(9915)], { stdio: "ignore" });
     f.fechar("v3.70 resgate");
+  });
+
+
+  await bloco(t, "v3.71 settings nos lugares certos (ferramentas da conta, números do provedor, painel)", async () => {
+    const f = fiscal();
+    const CONTAINER = process.env.CONTAINER ?? "";
+    const DB = process.env.DBCONTAINER ?? CONTAINER.replace("-api-", "-db-");
+    const GAV = "suite-v371";
+    if (!CONTAINER || !OPKEY) {
+      f.check("v3.71 precisa do container (provedor falso dentro dele)", true, "sem CONTAINER: bloco não executável");
+      f.fechar("v3.71 (pulada)");
+      return;
+    }
+    const sql = (q: string) =>
+      execFileSync("docker", ["exec", DB, "sh", "-c", `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "${q}"`], { encoding: "utf8" }).trim();
+
+    /* provedor falso que diz quantas ferramentas recebeu no pedido (eco) */
+    const cod = [
+      "const http=require('http');",
+      "const s=http.createServer((rq,rs)=>{let b='';rq.on('data',c=>b+=c);rq.on('end',()=>{",
+      "const p=JSON.parse(b||'{}');const tools=p.tools||[];",
+      "rs.setHeader('content-type','application/json');",
+      "rs.end(JSON.stringify({choices:[{message:{role:'assistant',content:JSON.stringify({ntools:tools.length})}}]}));",
+      "});});",
+      "s.listen(9931,'127.0.0.1');setTimeout(()=>process.exit(0),240000);",
+    ].join("");
+    execFileSync("docker", ["exec", "-d", String(CONTAINER), "node", "-e", cod]);
+    await dormir(1200);
+
+    /* a linha própria do `teste` (legado) tem prioridade sobre o padrão: desliga antes */
+    await call("PUT", "/config/provider", {
+      key: OPKEY, corpo: { tenant: "teste", tipo: "openai", base_url: "http://127.0.0.1:9931/v1", modelo: "", ativo: false },
+    });
+
+    const eco = async (pergunta: string): Promise<number> => {
+      const r = await call("POST", "/chat", { key: TESTKEY, corpo: { pergunta, memoria: GAV } });
+      try {
+        return Number(JSON.parse(String(r.json?.resposta ?? "{}")).ntools);
+      } catch {
+        return -1;
+      }
+    };
+
+    /* ---- 1) os números de serviço voltaram ao cadastro do provedor ---- */
+    let r = await call("PUT", "/provedores", {
+      key: OPKEY,
+      corpo: {
+        nome: "n371", tipo: "openai", base_url: "http://127.0.0.1:9931/v1", modelo: "eco", chave: "***",
+        publico: true, padrao: true, tenant: "global", mcp_interno: true,
+        temperatura: 0.6, contexto_tokens: 40000, reserva_tokens: 4000, silencio_s: 240,
+      },
+    });
+    f.check("v3.71 cadastro grava temperatura, janela, reserva e espera", r.status === 200, r.texto.slice(0, 200));
+    let lido = (await call("GET", "/provedores", { key: OPKEY })).json?.provedores?.find((x: any) => x.nome === "n371");
+    f.check("v3.71 a lista devolve os números da linha", lido?.temperatura === 0.6 && lido?.contexto_tokens === 40000 && lido?.reserva_tokens === 4000 && lido?.silencio_s === 240, {
+      temperatura: lido?.temperatura, contexto: lido?.contexto_tokens, reserva: lido?.reserva_tokens, espera: lido?.silencio_s,
+    });
+
+    /* ---- 2) os botões (ligar/desligar, público, padrão) NÃO apagam mais a linha ----
+       Eles mandam só nome + base_url: temperatura, modelo, tipo e ativo têm que ser preservados.
+       Antes o `modelo` ia para "" e o provedor ficava incompleto — sumia do chat. */
+    await call("PUT", "/provedores", { key: OPKEY, corpo: { nome: "n371", tenant: "global", ativo: false } });
+    await call("PUT", "/provedores", { key: OPKEY, corpo: { nome: "n371", tenant: "global", publico: false } });
+    lido = (await call("GET", "/provedores", { key: OPKEY })).json?.provedores?.find((x: any) => x.nome === "n371" && x.escopo === "*");
+    f.check("v3.71 PUT sem temperatura PRESERVA a gravada (antes caía para 0,2)", lido?.temperatura === 0.6 && lido?.reserva_tokens === 4000 && lido?.silencio_s === 240, {
+      temperatura: lido?.temperatura, reserva: lido?.reserva_tokens, espera: lido?.silencio_s,
+    });
+    f.check("v3.71 PUT sem modelo/modelo e tipo PRESERVAM a linha (não some do chat)", lido?.modelo === "eco" && lido?.tipo === "openai" && lido?.base_url === "http://127.0.0.1:9931/v1", {
+      modelo: lido?.modelo, tipo: lido?.tipo, base: lido?.base_url,
+    });
+    f.check("v3.71 PUT sem ativo não religa a linha desligada", lido?.ativo === false, lido?.ativo);
+    await call("PUT", "/provedores", { key: OPKEY, corpo: { nome: "n371", tenant: "global", ativo: true, publico: true } });
+    lido = (await call("GET", "/provedores", { key: OPKEY })).json?.provedores?.find((x: any) => x.nome === "n371" && x.escopo === "*");
+    f.check("v3.71 religando, a linha volta completa", lido?.ativo === true && lido?.modelo === "eco", { ativo: lido?.ativo, modelo: lido?.modelo });
+    r = await call("PUT", "/provedores", { key: OPKEY, corpo: { nome: "n371", tenant: "global", temperatura: 1.7 } });
+    f.check("v3.71 temperatura fora da faixa é recusada", r.status === 422, { status: r.status, corpo: r.texto.slice(0, 120) });
+
+    /* ---- 3) o painel mostra os números da linha que ATENDE o chat ---- */
+    r = await call("GET", "/config/provider?tenant=teste", { key: OPKEY });
+    f.check("v3.71 painel lê a linha que serve (janela 40.000, reserva 4.000, espera 240)", r.status === 200 && r.json?.reserva_tokens === 4000 && r.json?.silencio_s === 240 && r.json?.janela_efetiva === 40000, {
+      reserva: r.json?.reserva_tokens, espera: r.json?.silencio_s, janela: r.json?.janela_efetiva, origem: r.json?.origem_janela,
+      padrao: r.json?.padrao_nome, servindo: r.json?.servindo,
+    });
+    r = await call("PUT", "/provedores", {
+      key: OPKEY,
+      corpo: {
+        nome: "n371b", tipo: "openai", base_url: "http://127.0.0.1:9931/v1", modelo: "eco", chave: "***",
+        publico: true, padrao: true, tenant: "global", mcp_interno: true, reserva_tokens: 8000, silencio_s: 60, contexto_tokens: 40000,
+      },
+    });
+    f.check("v3.71 trocar o padrão troca os números do painel", r.status === 200, r.texto.slice(0, 160));
+    r = await call("GET", "/config/provider?tenant=teste", { key: OPKEY });
+    f.check("v3.71 painel seguiu a nova linha padrão (8.000 / 60s)", r.json?.reserva_tokens === 8000 && r.json?.silencio_s === 60, {
+      reserva: r.json?.reserva_tokens, espera: r.json?.silencio_s, padrao: r.json?.padrao_nome, servindo: r.json?.servindo,
+    });
+
+    /* ---- 4) o interruptor das ferramentas é da CONTA e o chat obedece ---- */
+    /* o painel responde o valor EFETIVO: a linha diz true e ninguém decidiu na conta */
+    r = await call("GET", "/config/provider?tenant=teste", { key: OPKEY });
+    f.check("v3.71 painel mostra o valor efetivo (herdado da linha)", r.json?.mcp_interno === true, r.json?.mcp_interno);
+    const comFerramentas = await eco("oi com ferramentas");
+    f.check("v3.71 sem decisão da conta, o chat herda a linha (ferramentas vão)", comFerramentas > 0, { ferramentas_no_pedido: comFerramentas });
+
+    r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tenant: "teste", ferramentas_internas: false } });
+    f.check("v3.71 desligar grava na conta", r.status === 200 && r.json?.ferramentas_internas === false, r.texto.slice(0, 160));
+    f.check("v3.71 painel refleja o desligado", (await call("GET", "/config/provider?tenant=teste", { key: OPKEY })).json?.mcp_interno === false);
+    const semFerramentas = await eco("oi sem ferramentas");
+    f.check("v3.71 DESLIGADO na tela = nenhuma ferramenta no pedido do modelo", semFerramentas === 0, { ferramentas_no_pedido: semFerramentas });
+    f.check("v3.71 a linha do provedor continua true (decisão é da conta)", sql("SELECT mcp_interno FROM provedores WHERE nome='n371b'") === "t");
+
+    /* decisão da conta MANDA na linha: linha true + conta false = sem ferramentas */
+    f.check("v3.71 conta vence a linha (linha true, conta false)", (await eco("oi de novo")) === 0);
+
+    r = await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tenant: "teste", ferramentas_internas: null } });
+    f.check("v3.71 anular a decisão volta a herdar da linha", r.status === 200 && r.json?.ferramentas_internas === null, r.texto.slice(0, 160));
+    const herdando = await eco("oi herdando");
+    f.check("v3.71 herdando de novo: ferramentas voltam", herdando > 0, { ferramentas_no_pedido: herdando });
+
+    /* salvar o comportamento SEM mandar o interruptor não apaga a decisão */
+    await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tenant: "teste", ferramentas_internas: false } });
+    await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tenant: "teste", max_rodadas: 7 } });
+    f.check("v3.71 salvar rodadas não apaga a decisão das ferramentas", sql("SELECT ferramentas_internas FROM provider_config WHERE escopo='teste'") === "f");
+    await call("PUT", "/config/instrucoes", { key: OPKEY, corpo: { tenant: "teste", ferramentas_internas: null, max_rodadas: 5 } });
+
+    /* limpeza: linhas, conta e fake voltam ao que eram */
+    for (const nome of ["n371", "n371b"]) {
+      const id = Number((await call("GET", "/provedores", { key: OPKEY })).json?.provedores?.find((x: any) => x.nome === nome)?.id ?? 0);
+      if (id) await call("DELETE", `/provedores/${id}`, { key: OPKEY });
+    }
+    await call("DELETE", `/chat?memoria=${GAV}`, { key: OPKEY });
+    execFileSync("docker", ["exec", String(CONTAINER), "sh", "-c", pkill(9931)], { stdio: "ignore" });
+    f.fechar("v3.71 settings nos lugares certos");
   });
 
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {

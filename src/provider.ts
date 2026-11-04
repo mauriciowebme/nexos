@@ -88,6 +88,9 @@ type Linha = {
   contexto_detectado: number | null;
   silencio_s: number;
   ativo: boolean;
+  /** v3.71: interruptor das ferramentas do nexos como DECISÃO DA CONTA.
+     null = "ninguém decidiu" (o chat herda o que a linha do provedor diz). */
+  ferramentas_internas: boolean | null;
   atualizado_em: string;
 };
 
@@ -141,6 +144,12 @@ export async function initProvider(): Promise<void> {
      (ferramenta é o caminho). A coluna fica para não quebrar banco velho e deixa de ser lida. */
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS system_prompt TEXT NOT NULL DEFAULT ''`);
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS mcp_interno BOOLEAN NOT NULL DEFAULT false`);
+  /* v3.71 — o interruptor "dar as ferramentas do nexos ao chat" passou a ser da CONTA.
+     NULL = "ninguém decidiu": o chat herda o que a linha do provedor diz (comportamento antigo).
+     true/false = decisão do dono, vale para TODO provedor escolhido na conversa.
+     Coluna separada de `mcp_interno` (essa é da linha de serviço) justamente para não
+     chutar o valor de quem nunca mexeu no interruptor. */
+  await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS ferramentas_internas BOOLEAN`);
   await q(`ALTER TABLE provider_config ADD COLUMN IF NOT EXISTS max_rodadas INT NOT NULL DEFAULT ${RODADAS_PADRAO}`);
   /* v3.0: memória e orçamento de contexto. NULL = "não configurado" (usa o padrão do código);
      contexto_tokens/contexto_detectado ficam NULL até alguém configurar ou o teste de conexão detectar. */
@@ -270,6 +279,9 @@ export async function resolverProvider(
     cfg.max_rodadas = conta.max_rodadas;
     cfg.memoria_turnos = conta.memoria_turnos;
     cfg.verbatim_turnos = conta.verbatim_turnos;
+    /* v3.71: o interruptor das ferramentas do nexos também é da CONTA (defeito: a tela
+       gravava numa tabela e o chat obedecia a outra — desligar não desligava nada). */
+    cfg.mcp_interno = mcpInternoEfetivo(conta, cfg.mcp_interno);
     return cfg;
   }
   /* padrão: o marcado no escopo do usuário vence; depois o público marcado como padrão.
@@ -289,6 +301,7 @@ export async function resolverProvider(
     viaPadrao.max_rodadas = conta.max_rodadas;
     viaPadrao.memoria_turnos = conta.memoria_turnos;
     viaPadrao.verbatim_turnos = conta.verbatim_turnos;
+    viaPadrao.mcp_interno = mcpInternoEfetivo(conta, viaPadrao.mcp_interno);  // v3.71
     return viaPadrao;
   }
   /* v3.60 — sem PADRÃO não há chat (regra do dono: "se não tiver padrão, não exibe o chat").
@@ -315,7 +328,8 @@ export async function resolverProvider(
     chave: l.chave,
     temperatura: Number(l.temperatura),
     system_prompt: l.system_prompt ?? "",
-    mcp_interno: Boolean(l.mcp_interno),
+    /* v3.71: a decisão da CONTA vale também para o caminho legado (linha antiga) */
+    mcp_interno: mcpInternoEfetivo(conta, Boolean(l.mcp_interno)),
     max_rodadas: Number(l.max_rodadas ?? RODADAS_PADRAO),
     memoria_turnos: Number(l.memoria_turnos ?? MEMORIA_PADRAO),
     verbatim_turnos: Number(l.verbatim_turnos ?? VERBATIM_PADRAO),
@@ -376,6 +390,8 @@ export async function lerComportamentoConta(tenant: string): Promise<{
   max_rodadas: number;
   memoria_turnos: number;
   verbatim_turnos: number;
+  /** v3.71: NULL = ninguém mexeu no interruptor (o chat herda da linha do provedor) */
+  ferramentas_internas: boolean | null;
 }> {
   const r = await q<Linha>(
     `SELECT * FROM provider_config WHERE escopo IN ($1, $2)
@@ -387,7 +403,19 @@ export async function lerComportamentoConta(tenant: string): Promise<{
     max_rodadas: Number(l?.max_rodadas ?? RODADAS_PADRAO),
     memoria_turnos: Number(l?.memoria_turnos ?? MEMORIA_PADRAO),
     verbatim_turnos: Number(l?.verbatim_turnos ?? VERBATIM_PADRAO),
+    ferramentas_internas:
+      l && l.ferramentas_internas !== null && l.ferramentas_internas !== undefined
+        ? Boolean(l.ferramentas_internas)
+        : null,
   };
+}
+
+/** v3.71 — o que o chat OBEDOCE sobre ferramentas do nexos: a decisão da CONTA quando existe,
+ *  senão o que a linha do provedor diz. Defeito que isso encerra: o interruptor da tela gravava
+ *  em `provider_config.mcp_interno` e o chat lia `provedores.mcp_interno` — desligar ali não
+ *  desligava nada. */
+export function mcpInternoEfetivo(conta: { ferramentas_internas: boolean | null }, daLinha: boolean): boolean {
+  return conta.ferramentas_internas ?? daLinha;
 }
 
 /** Grava as instruções e o comportamento do agente (v3.55: rodadas, memória e intactas
@@ -406,6 +434,8 @@ export async function salvarInstrucoes(
     summary_chars_cap?: unknown;
     max_pairs?: unknown;
     compactacao_percent?: unknown;
+    /** v3.71: interruptor das ferramentas do nexos (da CONTA). null = herdar da linha do provedor */
+    ferramentas_internas?: unknown;
   },
 ): Promise<{
   escopo: string;
@@ -416,6 +446,8 @@ export async function salvarInstrucoes(
   memoria_turnos: number;
   verbatim_turnos: number;
   compactacao_percent: number;
+  /** v3.71: null = herdando da linha do provedor */
+  ferramentas_internas: boolean | null;
   comp: Opcoes;
 }> {
   const escopo = tenantFor(user, typeof body.tenant === "string" ? body.tenant : null);
@@ -454,16 +486,30 @@ export async function salvarInstrucoes(
     1,
     100,
   );
+  /* v3.71 — "dar as ferramentas do nexos ao chat" é da CONTA (campo `ferramentas_internas`).
+     Ausente no corpo = preserva (a tela de Comportamento salva só os seus campos); null = volta
+     a herdar da linha do provedor; true/false = decisão do dono, vale para todo provedor.
+     Encerra o defeito de o interruptor gravar numa tabela e o chat obedecer outra. */
+  const ferramentasInternas =
+    body.ferramentas_internas === undefined
+      ? (anterior?.ferramentas_internas === null || anterior?.ferramentas_internas === undefined
+          ? null
+          : Boolean(anterior.ferramentas_internas))
+      : body.ferramentas_internas === null
+        ? null
+        : Boolean(body.ferramentas_internas);
   await q(
     `INSERT INTO provider_config (escopo, base_url, modelo, system_prompt, max_rodadas, memoria_turnos, verbatim_turnos,
-       threshold_k, tail_chars_cap, pairs_block_cap, summary_chars_cap, max_pairs, compactacao_percent)
-     VALUES ($1, '', '', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       threshold_k, tail_chars_cap, pairs_block_cap, summary_chars_cap, max_pairs, compactacao_percent,
+       ferramentas_internas)
+     VALUES ($1, '', '', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      ON CONFLICT (escopo) DO UPDATE SET system_prompt = EXCLUDED.system_prompt, max_rodadas = EXCLUDED.max_rodadas,
        memoria_turnos = EXCLUDED.memoria_turnos, verbatim_turnos = EXCLUDED.verbatim_turnos,
        threshold_k = EXCLUDED.threshold_k, tail_chars_cap = EXCLUDED.tail_chars_cap,
        pairs_block_cap = EXCLUDED.pairs_block_cap, summary_chars_cap = EXCLUDED.summary_chars_cap,
-       max_pairs = EXCLUDED.max_pairs, compactacao_percent = EXCLUDED.compactacao_percent, atualizado_em = now()`,
-    [escopo, texto, maxRodadas, memoriaTurnos, verbatimTurnos, thresholdK, tailCharsCap, pairsBlockCap, summaryCharsCap, maxPairs, compactacaoPercent],
+       max_pairs = EXCLUDED.max_pairs, compactacao_percent = EXCLUDED.compactacao_percent,
+       ferramentas_internas = EXCLUDED.ferramentas_internas, atualizado_em = now()`,
+    [escopo, texto, maxRodadas, memoriaTurnos, verbatimTurnos, thresholdK, tailCharsCap, pairsBlockCap, summaryCharsCap, maxPairs, compactacaoPercent, ferramentasInternas],
   );
   return {
     escopo,
@@ -474,6 +520,7 @@ export async function salvarInstrucoes(
     memoria_turnos: memoriaTurnos,
     verbatim_turnos: verbatimTurnos,
     compactacao_percent: compactacaoPercent,
+    ferramentas_internas: ferramentasInternas,
     comp: {
       thresholdK,
       protectLastN: verbatimTurnos,
@@ -496,7 +543,6 @@ export async function verProvider(user: Usuario, tenantArg?: string | null) {
   const completa = (l?: Linha | null) => Boolean(l && l.base_url && l.modelo);
   const usaPropria = tenant !== GLOBAL && (completa(propria.rows[0]) || !global.rows[0]);
   const l = (usaPropria ? propria.rows[0] : global.rows[0]) ?? propria.rows[0] ?? global.rows[0] ?? null;
-  const plano = planoDeJanela(l);
   /* v3.35: a instrução mostrada é a da CONTA (não a da linha que por acaso serve o chat) */
   const instrucoes = await lerInstrucoes(tenant);
   /* v3.69: os NÚMEROS do comportamento exibidos na tela são os MESMOS que o chat obedece
@@ -510,7 +556,11 @@ export async function verProvider(user: Usuario, tenantArg?: string | null) {
      ORDER BY (escopo = $1) DESC, padrao DESC, nome`,
     [tenant],
   );
-  const podeUsar = visiveis.rows.filter((x) => podeVerProvedor(user, x));
+  /* v3.71: "quem enxerga" é a CONTA ALVA (mesma regra de `listarProvedores`). Sem isso, o
+     operador olhando o cliente X via o padrão de OUTRA conta (privado, de outro escopo) e o
+     painel mostrava os números de uma linha que nunca atenderia aquele cliente. */
+  const alvo: Usuario = user.operador && tenantArg ? { tenant, operador: false } : user;
+  const podeUsar = visiveis.rows.filter((x) => podeVerProvedor(alvo, x));
   /* v3.60 — a linha antiga (provider_config) também conta como provedor disponível: ela continua
      atendendo quem foi configurado pelo caminho antigo. */
   const legadoOk = await q<Linha>(
@@ -518,8 +568,22 @@ export async function verProvider(user: Usuario, tenantArg?: string | null) {
      WHERE escopo IN ($1, $2) AND ativo = true AND base_url <> '' AND modelo <> '' LIMIT 1`,
     [tenant, GLOBAL],
   );
-  const lServindo = (l && podeVerProvedor(user, l) ? l : podeUsar[0] ?? l) as Record<string, any> | undefined;
+  const lServindo = (l && podeVerProvedor(alvo, l) ? l : podeUsar[0] ?? l) as Record<string, any> | undefined;
   const padraoVisivel = podeUsar.find((x) => Boolean(x.padrao));
+  /* v3.71 — os NÚMEROS DE SERVIÇO que o painel mostra (temperatura, janela, reserva, espera,
+     contexto) saem da linha que ATENDE o chat quando ninguém escolheu outro provedor (o padrão
+     que esta conta enxerga), não da linha antiga de `provider_config`. Defeito: com o Strata
+     escolhido no chat, a tela seguia exibindo os números da linha do Clauricio. */
+  const lServico = (padraoVisivel ?? lServindo ?? l) as Record<string, any> | null;
+  const plano = planoDeJanela(lServico as any);
+  /* número de serviço: a linha que serve vence; se ela não tem o campo, o valor antigo
+     (provider_config) continua aparecendo — instalação configurada pelo caminho velho. */
+  const num = (campo: string, padrao: number): number => {
+    const daLinha = lServico?.[campo];
+    if (daLinha !== null && daLinha !== undefined && Number.isFinite(Number(daLinha))) return Number(daLinha);
+    const antigo = (l as Record<string, any> | null)?.[campo];
+    return antigo === null || antigo === undefined || !Number.isFinite(Number(antigo)) ? padrao : Number(antigo);
+  };
   return {
     /* v3.60 — "configurado" = existe PADRÃO que esta conta enxerga. Sem padrão não há chat
        (regra do dono), então a tela precisa refletir isso, não a mera existência de linhas. */
@@ -533,23 +597,31 @@ export async function verProvider(user: Usuario, tenantArg?: string | null) {
     tipo: l?.tipo ?? "litellm",
     base_url: l?.base_url ?? "",
     modelo: l?.modelo ?? "",
-    temperatura: l ? Number(l.temperatura) : 0.2,
+    temperatura: num("temperatura", 0.2),
     system_prompt: instrucoes,
     tem_system_prompt: Boolean(instrucoes.trim()),
     /** v3.34: o texto padrão da casa, para o botão "restaurar instruções padrão" da tela */
     regras_padrao: REGRAS_CASA,
-    mcp_interno: Boolean(l?.mcp_interno ?? false),
+    /* v3.71: o valor EFETIVO (decisão da conta quando existe, senão a linha do provedor) —
+       é exatamente o que o chat obedece, não a coluna de uma tabela só. */
+    mcp_interno: mcpInternoEfetivo(comportamento, Boolean(lServico?.mcp_interno ?? l?.mcp_interno ?? false)),
     max_rodadas: comportamento.max_rodadas,
     memoria_turnos: comportamento.memoria_turnos,
     verbatim_turnos: comportamento.verbatim_turnos,
     /* v3.56 — compactação (é da CONTA, igual às instruções): lê com a MESMA precedência
        de `lerInstrucoes` (linha própria vence a global), não a linha que serve o provider */
     comp: await lerOpcoesCompactacao(tenant),
-    reserva_tokens: l ? Number(l.reserva_tokens ?? RESERVA_PADRAO) : RESERVA_PADRAO,
-    silencio_s: l ? Number(l.silencio_s ?? 0) : 0,
-    silencio_efetivo_s: l && Number(l.silencio_s) > 0 ? Number(l.silencio_s) : SILENCIO_PADRAO_S,
-    contexto_tokens: l?.contexto_tokens === null || l?.contexto_tokens === undefined ? null : Number(l.contexto_tokens),
-    contexto_detectado: l?.contexto_detectado === null || l?.contexto_detectado === undefined ? null : Number(l.contexto_detectado),
+    reserva_tokens: num("reserva_tokens", RESERVA_PADRAO),
+    silencio_s: num("silencio_s", 0),
+    silencio_efetivo_s: num("silencio_s", 0) > 0 ? num("silencio_s", 0) : SILENCIO_PADRAO_S,
+    contexto_tokens: (() => {
+      const v = lServico?.contexto_tokens ?? (l as Record<string, any> | null)?.contexto_tokens;
+      return v === null || v === undefined || !Number.isFinite(Number(v)) || Number(v) === 0 ? null : Number(v);
+    })(),
+    contexto_detectado: (() => {
+      const v = lServico?.contexto_detectado ?? (l as Record<string, any> | null)?.contexto_detectado;
+      return v === null || v === undefined ? null : Number(v);
+    })(),
     janela_efetiva: plano.janela,
     origem_janela: plano.origem_janela,
     ativo: Boolean(l?.ativo ?? false),
@@ -601,7 +673,9 @@ export async function salvarProvider(
   const chaveNova =
     body.chave === undefined || body.chave === null || body.chave === "***" ? linhaAnterior?.chave ?? "" : String(body.chave);
 
-  const temperatura = body.temperatura === undefined ? 0.2 : Number(body.temperatura);
+  /* v3.71: ausente = preserva (a tela pode salvar só alguns campos; o valor não cai para 0,2
+     sozinho) */
+  const temperatura = body.temperatura === undefined ? Number(linhaAnterior?.temperatura ?? 0.2) : Number(body.temperatura);
   if (!Number.isFinite(temperatura) || temperatura < 0 || temperatura > 1) {
     throw erro422("temperatura deve estar entre 0 e 1");
   }
@@ -1018,6 +1092,15 @@ export async function testarProvider(user: Usuario, body: Record<string, unknown
           `UPDATE provider_config SET contexto_detectado = $2, atualizado_em = now()
            WHERE escopo = $1 AND (contexto_tokens IS NULL OR contexto_tokens = 0)`,
           [escopoAlvo, contexto_detectado],
+        );
+        /* v3.71: a janela detectada é do SERVIÇO que respondeu — guarda também na linha do
+           provedor que atende aquele escopo (mesma base + modelo). É dela que o chat e o painel
+           leem hoje; sem isto a detecção sumia da tela (o check da v3.0 pegou isso). */
+        await q(
+          `UPDATE provedores SET contexto_detectado = $2, atualizado_em = now()
+            WHERE escopo = ANY($1) AND padrao = true AND ativo = true AND base_url = $3 AND modelo = $4
+              AND (contexto_tokens IS NULL OR contexto_tokens = 0)`,
+          [[escopoAlvo, GLOBAL], contexto_detectado, base, modelo],
         );
       }
     }

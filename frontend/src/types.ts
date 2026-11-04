@@ -347,6 +347,11 @@ export type Provedor = {
   escopo: string;
   modelos: string[];
   modelos_em: string | null;
+  /** v3.71 — números de serviço do provedor (voltaram a ter tela) */
+  temperatura: number;
+  contexto_tokens: number | null;
+  reserva_tokens: number;
+  silencio_s: number;
 };
 
 export type ProvedoresResp = { provedores: Provedor[] };

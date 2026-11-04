@@ -385,11 +385,15 @@
     @apply mb-2 block rounded-cartao border border-borda bg-sup p-3;
   }
   .tabela tbody td {
-    @apply flex items-baseline gap-2 border-0 px-0 py-1 text-right;
+    /* `flex-wrap`: dentro do cartão a célula é flex, então um `<span class="block">` NÃO pula
+       linha — os números do provedor ficavam espremidos ao lado dos selos e quebravam LETRA A
+       LETRA ("tem per atu ra"). Com wrap, o conteúdo largo cai para a linha de baixo. */
+    @apply flex flex-wrap items-baseline gap-x-2 gap-y-1 border-0 px-0 py-1 text-right;
   }
   .tabela tbody td::before {
     content: attr(data-rot);
-    @apply mr-auto text-[12px] uppercase tracking-[0.4px] text-txt3;
+    /* o rótulo não pode quebrar: "SERVIÇO" virava "SERVIÇ / O" e o cartão perdia o campo. */
+    @apply mr-auto whitespace-nowrap text-[12px] uppercase tracking-[0.4px] text-txt3;
   }
   .tabela tbody td:not([data-rot])::before {
     content: "";

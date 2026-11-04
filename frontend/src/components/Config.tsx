@@ -85,7 +85,9 @@ function Provider({ operador }: { operador: boolean }) {
   const { toast } = useToast();
   const [lista, setLista] = useState<Provedor[]>([]);
   /* form dos providers nomeados (novo ou edição) */
-  const [novo, setNovo] = useState({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global" });
+  /* v3.71: voltam ao formulário os números de serviço que a reescrita da 3.69 tinha deixado de
+     fora (temperatura, janela, reserva, espera). Vazio = não manda = preserva o que está gravado. */
+  const [novo, setNovo] = useState({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global", temperatura: "", janela: "", reserva: "", espera: "" });
   const [editando, setEditando] = useState<string | null>(null);
   const [formNomeadoAberto, setFormNomeadoAberto] = useState(false);
   const [rodando, setRodando] = useState<string | null>(null);
@@ -115,7 +117,8 @@ function Provider({ operador }: { operador: boolean }) {
 
   function preencherNomeado(pr: Provedor) {
     setEditando(pr.nome);
-    setNovo({ nome: pr.nome, tipo: pr.tipo === "ollama" ? "ollama" : "openai", base_url: pr.base_url, chave: "", modelo: pr.modelo, paraTodos: pr.escopo === "*", publico: pr.publico, padrao: pr.padrao, escopoOrig: pr.escopo === "*" ? "global" : pr.escopo });
+    setNovo({ nome: pr.nome, tipo: pr.tipo === "ollama" ? "ollama" : "openai", base_url: pr.base_url, chave: "", modelo: pr.modelo, paraTodos: pr.escopo === "*", publico: pr.publico, padrao: pr.padrao, escopoOrig: pr.escopo === "*" ? "global" : pr.escopo,
+      temperatura: String(pr.temperatura ?? ""), janela: String(pr.contexto_tokens ?? ""), reserva: String(pr.reserva_tokens ?? ""), espera: String(pr.silencio_s ?? "") });
     setFormNomeadoAberto(true);
   }
 
@@ -133,9 +136,15 @@ function Provider({ operador }: { operador: boolean }) {
         publico: novo.publico,
         padrao: novo.padrao,
         ...(novo.chave ? { chave: novo.chave } : {}),
+        /* v3.71: números de serviço do provedor. Campo vazio não é enviado (o servidor
+           preserva), então os botões de ligar/público/padrão não apagam mais nada. */
+        ...(novo.temperatura.trim() !== "" ? { temperatura: Number(novo.temperatura) } : {}),
+        ...(novo.janela.trim() !== "" ? { contexto_tokens: Number(novo.janela) } : {}),
+        ...(novo.reserva.trim() !== "" ? { reserva_tokens: Number(novo.reserva) } : {}),
+        ...(novo.espera.trim() !== "" ? { silencio_s: Number(novo.espera) } : {}),
       });
       toast(editando ? "provedor atualizado" : "provedor cadastrado — descubra os modelos para o chat escolher", "sucesso");
-      setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global" });
+      setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global", temperatura: "", janela: "", reserva: "", espera: "" });
       setEditando(null);
       setFormNomeadoAberto(false);
       await carregar();
@@ -275,20 +284,22 @@ function Provider({ operador }: { operador: boolean }) {
           )}
           {lista.map((pr) => (
             <tr key={pr.id} id={"prov-" + pr.nome} className={pr.ativo ? "" : "op-60"}>
-              <td>
+              {/* v3.71 — `data-rot` em cada célula: no celular a tabela vira cartão e o rótulo
+                 vem daí. Sem ele a linha do provedor ficava só com os valores, sem nome de campo. */}
+              <td data-rot="provedor">
                 <b className="mono">{pr.nome}</b>
                 <span className="sub2 block">
                   {pr.publico ? "público — todo mundo vê" : "privado — só quem é desta conta"} ·{" "}
                   {pr.escopo === "*" ? "conta do operador" : `escopo: ${pr.escopo}`}
                 </span>
               </td>
-              <td className="mono break-all">
+              <td className="mono break-all" data-rot="serviço">
                 {pr.tipo === "ollama" ? "ollama" : "openai"} · {pr.base_url}
               </td>
-              <td className="mono break-all">
+              <td className="mono break-all" data-rot="modelos">
                 {pr.modelos.length ? pr.modelos.join(" · ") : pr.modelo || "—"}
               </td>
-              <td>
+              <td data-rot="status">
                 {pr.padrao ? (
                   <span className="chip chip-verde">padrão</span>
                 ) : pr.ativo ? (
@@ -298,9 +309,20 @@ function Provider({ operador }: { operador: boolean }) {
                 )}
                 <span className="chip">{pr.publico ? "público" : "privado"}</span>
                 {pr.chave_mascarada ? <span className="chip">{pr.chave_mascarada}</span> : null}
+                {/* v3.71: os números de serviço desta linha, à vista — é o que o chat usa quando
+                    o provedor é escolhido (antes só apareciam no painel do padrão da casa) */}
+                {/* `w-full` sem `break-all`: no cartão a célula é flex, então o texto dividia a linha
+                    com os selos e quebrava LETRA A LETRA (achado na prova visual do celular). */}
+                <span className="sub2 mono block w-full text-right" id={"provNumeros-" + pr.nome}>
+                  temperatura {pr.temperatura} · janela {pr.contexto_tokens ? pr.contexto_tokens.toLocaleString("pt-BR") : "automática"} · reserva{" "}
+                  {pr.reserva_tokens.toLocaleString("pt-BR")} · espera {pr.silencio_s || "padrão"}
+                </span>
               </td>
               {operador && (
-                <td className="text-right">
+                /* v3.71: `acoes-linha` (quebra em linha) — no celular eram seis botões numa
+                   linha só, estourando o cartão */
+                <td className="text-right" data-rot="ações">
+                  <span className="acoes-linha">
                   <button className="btn btn-mini" disabled={rodando === pr.nome} onClick={() => void descobrir(pr)}>
                     modelos
                   </button>
@@ -323,9 +345,10 @@ function Provider({ operador }: { operador: boolean }) {
                   <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => preencherNomeado(pr)}>
                     {editando === pr.nome && formNomeadoAberto ? "editando…" : "editar"}
                   </button>
-                  <button className="btn btn-mini ml-1" disabled={rodando === pr.nome} onClick={() => void apagarNomeado(pr)}>
+                  <button className="btn btn-mini" disabled={rodando === pr.nome} onClick={() => void apagarNomeado(pr)}>
                     apagar
                   </button>
+                  </span>
                 </td>
               )}
             </tr>
@@ -376,6 +399,31 @@ function Provider({ operador }: { operador: boolean }) {
             <input id="provModeloNomeado" className="campo mt-1 mono" value={novo.modelo} placeholder="ex.: claude-sonnet-4-20250514"
               onChange={(e) => setNovo({ ...novo, modelo: e.target.value })} />
           </label>
+          {/* v3.71 — os quatro números de serviço do provedor, que a reescrita da 3.69 tinha
+              deixado sem tela (eles continuavam valendo no chat, mudáveis só por SQL). Campo
+              em branco não é enviado: o servidor preserva o que está gravado. */}
+          <div className="grade-2 !gap-3" id="formProvedorNumeros">
+            <label className="rotulo m-0">
+              temperatura (0 = sempre igual, 1 = criativo)
+              <input id="provTemperatura" className="campo mt-1 mono" inputMode="decimal" value={novo.temperatura}
+                placeholder="0.2" onChange={(e) => setNovo({ ...novo, temperatura: e.target.value.replace(",", ".") })} />
+            </label>
+            <label className="rotulo m-0">
+              janela de contexto em tokens (vazio = automático)
+              <input id="provJanela" className="campo mt-1 mono" inputMode="numeric" value={novo.janela}
+                placeholder="automático" onChange={(e) => setNovo({ ...novo, janela: e.target.value })} />
+            </label>
+            <label className="rotulo m-0">
+              reserva de tokens para a resposta
+              <input id="provReserva" className="campo mt-1 mono" inputMode="numeric" value={novo.reserva}
+                placeholder="1024" onChange={(e) => setNovo({ ...novo, reserva: e.target.value })} />
+            </label>
+            <label className="rotulo m-0">
+              espera máxima sem resposta (segundos; 0 = 180)
+              <input id="provEspera" className="campo mt-1 mono" inputMode="numeric" value={novo.espera}
+                placeholder="180" onChange={(e) => setNovo({ ...novo, espera: e.target.value })} />
+            </label>
+          </div>
           <label className="check">
             <input id="provGlobal" type="checkbox" checked={novo.paraTodos}
               onChange={(e) => setNovo({ ...novo, paraTodos: e.target.checked })} />
@@ -395,7 +443,7 @@ function Provider({ operador }: { operador: boolean }) {
             <button id="btnSalvarProvedor" className="btn" disabled={rodando === "form"} onClick={() => void salvarNomeado()}>
               {editando ? "salvar mudanças" : "cadastrar"}
             </button>
-            <button className="btn btn-mini ml-2" onClick={() => { setFormNomeadoAberto(false); setEditando(null); setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global" }); }}>
+            <button className="btn btn-mini ml-2" onClick={() => { setFormNomeadoAberto(false); setEditando(null); setNovo({ nome: "", tipo: "openai", base_url: "", chave: "", modelo: "", paraTodos: true, publico: true, padrao: false, escopoOrig: "global", temperatura: "", janela: "", reserva: "", espera: "" }); }}>
               fechar
             </button>
           </div>
@@ -742,21 +790,18 @@ function Ferramentas({ operador, tenant, onControleMaquinas }: { operador: boole
     }
   }
 
-  /** o botão fica na config do provider — grava só este campo, preservando o resto */
+  /* v3.71 — o interruptor é da CONTA e obedece no chat para TODO provedor escolhido.
+     Antes ele gravava em /config/provider (coluna `mcp_interno` da linha de serviço), que o
+     chat nem consultava: desligar na tela deixava as ferramentas ligadas. */
   async function ligarInterno(valor: boolean) {
     if (!p) return;
     setRodando("interno");
     try {
-      const r = await put<ProviderResp>("/config/provider", {
-        tipo: p.tipo,
-        base_url: p.base_url,
-        modelo: p.modelo,
-        temperatura: p.temperatura,
-        max_rodadas: p.max_rodadas,
-        ativo: p.ativo,
-        global: operador && p.origem === "global",
-        mcp_interno: valor,
+      await put("/config/instrucoes", {
+        ferramentas_internas: valor,
+        ...(operador && tenant ? { tenant } : {}),
       });
+      const r = await get<ProviderResp>("/config/provider" + (operador && tenant ? "?" + qs({ tenant }) : ""));
       setP(r);
       toast(valor ? "ferramentas do nexos ligadas no chat" : "ferramentas do nexos desligadas", "sucesso");
     } catch (e) {
@@ -921,11 +966,12 @@ function Ferramentas({ operador, tenant, onControleMaquinas }: { operador: boole
             )}
             {servidores.map((s) => (
               <tr key={s.nome} id={"mcp-" + s.nome}>
-                <td>
+                {/* v3.71: `data-rot` para o cartão do celular (mesma regra da tabela de providers) */}
+                <td data-rot="servidor">
                   <b className="mono">{s.nome}</b>
                 </td>
-                <td className="mono break-all">{s.url}</td>
-                <td>
+                <td className="mono break-all" data-rot="endereço">{s.url}</td>
+                <td data-rot="ferramentas">
                   <b>{s.ferramentas}</b>
                   {s.nomes.length > 0 && (
                     <span className="sub2 mono block break-all">
@@ -935,8 +981,8 @@ function Ferramentas({ operador, tenant, onControleMaquinas }: { operador: boole
                   )}
                   {s.ferramentas === 0 && <span className="sub2 block">nenhuma listada ainda</span>}
                 </td>
-                <td className="mono">{s.tem_cabecalho ? s.cabecalho_mascarado : "sem cabeçalho"}</td>
-                <td>
+                <td className="mono" data-rot="acesso">{s.tem_cabecalho ? s.cabecalho_mascarado : "sem cabeçalho"}</td>
+                <td data-rot="estado">
                   {s.ativo ? (
                     <span className="chip chip-verde">ligado</span>
                   ) : (
@@ -944,9 +990,9 @@ function Ferramentas({ operador, tenant, onControleMaquinas }: { operador: boole
                   )}
                   {s.erro ? <span className="sub2 block">último erro: {s.erro.slice(0, 60)}</span> : null}
                 </td>
-                <td className="text-right">
+                <td className="text-right" data-rot="ações">
                   {operador && (
-                    <>
+                    <span className="acoes-linha">
                       <button className="btn btn-mini" disabled={rodando === s.nome} onClick={() => void testar(s.nome)}>
                         atualizar ferramentas
                       </button>
@@ -956,7 +1002,7 @@ function Ferramentas({ operador, tenant, onControleMaquinas }: { operador: boole
                       <button className="btn btn-mini ml-1" disabled={rodando === s.nome} onClick={() => void apagar(s)}>
                         apagar
                       </button>
-                    </>
+                    </span>
                   )}
                 </td>
               </tr>
@@ -1098,13 +1144,15 @@ function Limites() {
       <h2 className="mb-3 text-[13px] font-semibold text-txt2">Limites em vigor</h2>
       <table className="tabela">
         <tbody>
-          <tr><td>Tamanho de um documento</td><td><b>{l.max_content_chars.toLocaleString("pt-BR")}</b> caracteres</td></tr>
-          <tr><td>Tamanho da pergunta</td><td><b>{l.max_query_chars.toLocaleString("pt-BR")}</b> caracteres</td></tr>
-          <tr><td>Trechos por usuário (cota)</td><td><b>{l.max_chunks_tenant.toLocaleString("pt-BR")}</b></td></tr>
-          <tr><td>Trechos por busca (padrão)</td><td><b>{l.top_k}</b></td></tr>
-          <tr><td>Similaridade mínima</td><td><b>{l.min_score}</b></td></tr>
-          <tr><td>Pedaço do documento</td><td><b>{l.chunk_palavras}</b> palavras ({l.chunk_sobreposicao} de sobreposição)</td></tr>
-          <tr><td>Páginas por PDF escaneado</td><td><b>{l.ocr_paginas_max}</b> páginas</td></tr>
+          {/* v3.71: rótulo por célula (`data-rot`) para o celular — sem ele a lista de limites
+              virava cartão com os números soltos, sem dizer de que limite era cada um */}
+          <tr><td data-rot="limite">Tamanho de um documento</td><td data-rot="valor"><b>{l.max_content_chars.toLocaleString("pt-BR")}</b> caracteres</td></tr>
+          <tr><td data-rot="limite">Tamanho da pergunta</td><td data-rot="valor"><b>{l.max_query_chars.toLocaleString("pt-BR")}</b> caracteres</td></tr>
+          <tr><td data-rot="limite">Trechos por usuário (cota)</td><td data-rot="valor"><b>{l.max_chunks_tenant.toLocaleString("pt-BR")}</b></td></tr>
+          <tr><td data-rot="limite">Trechos por busca (padrão)</td><td data-rot="valor"><b>{l.top_k}</b></td></tr>
+          <tr><td data-rot="limite">Similaridade mínima</td><td data-rot="valor"><b>{l.min_score}</b></td></tr>
+          <tr><td data-rot="limite">Pedaço do documento</td><td data-rot="valor"><b>{l.chunk_palavras}</b> palavras ({l.chunk_sobreposicao} de sobreposição)</td></tr>
+          <tr><td data-rot="limite">Páginas por PDF escaneado</td><td data-rot="valor"><b>{l.ocr_paginas_max}</b> páginas</td></tr>
         </tbody>
       </table>
       <p className="dica mt-3 mb-0">estes números vêm do ambiente do servidor; para mudar, ajuste as variáveis e o operador redeploya</p>

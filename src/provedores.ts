@@ -28,6 +28,12 @@ export type ProvedorPub = {
   escopo: string;
   modelos: string[];
   modelos_em: string | null;
+  /** v3.71 — os números de serviço voltaram a ter tela (sumiram na reescrita da 3.69):
+     temperatura, janela manual, reserva de tokens e tempo de silêncio. */
+  temperatura: number;
+  contexto_tokens: number | null;
+  reserva_tokens: number;
+  silencio_s: number;
 };
 
 /* v3.60 — um provedor pertence ao escopo em que nasceu: `*` (do operador, global) ou o
@@ -128,6 +134,10 @@ function paraPub(l: Linha): ProvedorPub {
     escopo: String(l.escopo),
     modelos: Array.isArray(l.modelos) ? (l.modelos as string[]).map(String) : [],
     modelos_em: l.modelos_em ? new Date(l.modelos_em).toISOString() : null,
+    temperatura: Number(l.temperatura ?? 0.2),
+    contexto_tokens: l.contexto_tokens === null || l.contexto_tokens === undefined ? null : Number(l.contexto_tokens),
+    reserva_tokens: Number(l.reserva_tokens ?? 0),
+    silencio_s: Number(l.silencio_s ?? 0),
   };
 }
 
@@ -160,6 +170,11 @@ type CorpoProvedor = {
   padrao?: unknown;
   publico?: unknown;
   tenant?: unknown;
+  /** v3.71 — números de serviço do provedor (ausente = preserva o gravado). A reescrita da
+     3.69 tinha deixado reserva, janela e espera sem tela, embora continuassem valendo no chat. */
+  reserva_tokens?: unknown;
+  contexto_tokens?: unknown;
+  silencio_s?: unknown;
 };
 
 /** Cria ou substitui um provedor nomeado. Só o operador escreve (mesma regra do provider). */
@@ -171,12 +186,19 @@ export async function salvarProvedor(user: Usuario, corpo: CorpoProvedor): Promi
   const escopo = alvo === "global" || corpo.global === true ? GLOBAL : user.operador ? tenantFor(user, alvo) : user.tenant;
   const nome = String(corpo.nome ?? "").trim();
   if (!nome || nome.length > 60) throw erro422("nome do provedor é obrigatório (até 60 caracteres)");
-  const base = validaBase(corpo.base_url);
-  const modelo = String(corpo.modelo ?? "").trim();
-  const temperatura = corpo.temperatura === undefined ? 0.2 : Number(corpo.temperatura);
-  if (!Number.isFinite(temperatura) || temperatura < 0 || temperatura > 1) throw erro422("temperatura deve estar entre 0 e 1");
   const anterior = await q<Linha>(`SELECT * FROM provedores WHERE escopo = $1 AND nome = $2`, [escopo, nome]);
   const l = anterior.rows[0];
+  /* v3.71 — os botões da tela (ligar/desligar, tornar público, marcar padrão) mandam só nome e
+     base_url. `modelo`, `tipo` e `base_url` ausentes PRESERVAM a linha editada. Antes `modelo`
+     ia para string vazia: o provedor ficava incompleto e SUMIA do chat sem ninguém ter apagado
+     nada (e `tipo` caía para litellm, perdendo o caminho do Ollama). Linha nova continua
+     precisando de base_url e modelo. */
+  const base = corpo.base_url === undefined ? String(l?.base_url ?? "") : validaBase(corpo.base_url);
+  const modelo = corpo.modelo === undefined ? String(l?.modelo ?? "").trim() : String(corpo.modelo).trim();
+  /* v3.71 — omitir a temperatura PRESERVA a gravada (antes qualquer PUT que não a mandasse —
+     ligar, desligar, tornar público, marcar padrão — derrubava para 0,2 sem ninguém ver). */
+  const temperatura = corpo.temperatura === undefined ? Number(l?.temperatura ?? 0.2) : Number(corpo.temperatura);
+  if (!Number.isFinite(temperatura) || temperatura < 0 || temperatura > 1) throw erro422("temperatura deve estar entre 0 e 1");
   /* v3.69: omitir max_rodadas ao EDITAR preserva a linha (antes resetava para 5 em silêncio,
      igual ao defeito do prompt que a v3.34 consertou). O CHAT nem lê mais este campo:
      rodadas/memória/intactas são da CONTA (tela Comportamento) e valem para todo provedor. */
@@ -192,6 +214,21 @@ export async function salvarProvedor(user: Usuario, corpo: CorpoProvedor): Promi
   /* v3.60 — público nasce marcado (padrão do dono: provedor novo já atende todos);
      "privado" = só o dono do escopo vê. */
   const publico = corpo.publico === undefined ? (l ? Boolean(l.publico) : true) : Boolean(corpo.publico);
+  /* v3.71 — reserva de tokens, janela manual e silêncio entram no cadastro do provedor com a
+     mesma regra dos demais campos (ausente = preserva). Faixas iguais às da rota antiga
+     (/config/provider) para as duas telas não discordarem. */
+  const inteiro = (v: unknown, antes: unknown, nome: string, min: number, max: number): number => {
+    if (v === undefined || v === null || v === "") return Number(antes ?? 0);
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < min || n > max) throw erro422(`${nome} deve ser um número entre ${min} e ${max}`);
+    return n;
+  };
+  /* 1024 = o mesmo RESERVA_PADRAO do código (o padrão da coluna); literal para não criar
+     import circular com provider.ts, que já importa este módulo. */
+  const reservaTokens = inteiro(corpo.reserva_tokens, l?.reserva_tokens ?? 1024, "reserva_tokens", 1, 200000);
+  const contextoBruto = inteiro(corpo.contexto_tokens, l?.contexto_tokens, "contexto_tokens", 0, 4000000);
+  const contextoTokens = contextoBruto > 0 ? contextoBruto : null; // 0 = "deixa automático"
+  const silencioS = inteiro(corpo.silencio_s, l?.silencio_s, "silencio_s", 0, 1800);
   if (ativoDe(corpo, l) && !l && !modelo) {
     // o primeiro provedor ativo precisa de modelo (senão o chat não tem para quem falar)
     throw erro422("modelo é obrigatório");
@@ -199,16 +236,18 @@ export async function salvarProvedor(user: Usuario, corpo: CorpoProvedor): Promi
   void padraoDesejado; // aplicado adiante
 
   const r = await q<Linha>(
-    `INSERT INTO provedores (escopo, nome, tipo, base_url, chave, modelo, temperatura, system_prompt, mcp_interno, max_rodadas, ativo, padrao, publico, atualizado_em)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())
+    `INSERT INTO provedores (escopo, nome, tipo, base_url, chave, modelo, temperatura, system_prompt, mcp_interno, max_rodadas, ativo, padrao, publico,
+       reserva_tokens, contexto_tokens, silencio_s, atualizado_em)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, $14, $15, $16, now())
      ON CONFLICT (escopo, nome) DO UPDATE SET
        tipo=$3, base_url=$4, chave=$5, modelo=$6, temperatura=$7, system_prompt=$8,
-       mcp_interno=$9, max_rodadas=$10, ativo=$11, padrao=$12, publico=$13, atualizado_em=now()
+       mcp_interno=$9, max_rodadas=$10, ativo=$11, padrao=$12, publico=$13,
+       reserva_tokens=$14, contexto_tokens=$15, silencio_s=$16, atualizado_em=now()
      RETURNING *`,
     [
       escopo,
       nome,
-      limpaTipo(corpo.tipo),
+      corpo.tipo === undefined ? String(l?.tipo ?? "openai") : limpaTipo(corpo.tipo),
       base,
       chave,
       modelo,
@@ -216,9 +255,13 @@ export async function salvarProvedor(user: Usuario, corpo: CorpoProvedor): Promi
       prompt,
       corpo.mcp_interno === undefined ? (l ? Boolean(l.mcp_interno) : true) : Boolean(corpo.mcp_interno),
       maxRodadas,
-      corpo.ativo === undefined ? true : Boolean(corpo.ativo),
+      /* v3.71: ausente = preserva (editar uma linha desligada não religa sozinha) */
+      ativoDe(corpo, l),
       false, // "padrão" é um por escopo: movido por definirPadrao
       publico,
+      reservaTokens,
+      contextoTokens,
+      silencioS,
     ],
   );
   if (corpo.padrao === true) await definirPadraoNoEscopo(escopo, Number(r.rows[0].id));
