@@ -19,7 +19,7 @@ O que vai onde (lugares canônicos da casa — padrão `organizacao-documentacao
 
 | Arquivo | Assunto | Linhas |
 |---|---|---|
-| `proximos-passos.md` | **só o aberto**: nenhuma tarefa numerada na fila (T052/T053 retiradas por enquanto, a pedido do dono) + ideias não numeradas | ~52 |
+| `proximos-passos.md` | **só o aberto**: T054 (contexto atual no painel) + T055 (tok/s) + ideias não numeradas — T052/T053 retiradas por enquanto, a pedido do dono | ~85 |
 | `testes.md` | contrato da suíte do nexos (ponteiro para `suite-de-testes`) | 105 |
 
 Nada neste mapa autoriza execução: tarefas viram código com OK explícito do dono (25/10, regra gravada no roadmap).

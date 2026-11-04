@@ -9,7 +9,8 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 
 | T### | Nome | Módulo | Prioridade | Status | Link |
 |---|---|---|---|---|---|
-| — | *(nenhuma tarefa numerada em aberto)* | — | — | — | — |
+| T054 | Ver o **contexto atual** da conversa no painel | chat + painel | 🟠 Alta | 📋 não iniciado | [#t054](#t054) |
+| T055 | Ver a **velocidade dos tokens** (tok/s) do que o modelo escreve | chat + painel | 🟠 Alta | 📋 não iniciado | [#t055](#t055) |
 
 > T052 (sandbox Python) e T053 (isolamento do sandbox) foram **retiradas da fila por enquanto**, a pedido do dono em 04/11/2026. O que já estava entregue nelas continua no ar (v3.50.0, v3.51.0, v3.53.0, v3.63.0); o desenho e as etapas que faltavam ficam no `git log`.
 
@@ -44,6 +45,33 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 | 3.52.0 | `analisar_imagem` baixava a imagem sem user-agent (sites exigentes, como o Wikimedia, devolviam 400) e aceitava endereço interno (dava para pedir `127.0.0.1:8001`, o embedder). Agora usa o mesmo UA de navegador do `web_open` e passa pela mesma trava de endereço interno, inclusive a cada salto de redirecionamento. | Teste de todas as 57 ferramentas (30/10), chamando cada uma de verdade. |
 
 ---
+
+### T054 — Ver o contexto atual da conversa no painel
+
+| Campo | Conteúdo |
+|---|---|
+| **Módulo** | chat (`src/compactar.ts`, `src/provider.ts`) + painel (`Chat.tsx`) |
+| **Prioridade** | 🟠 Alta — sem este número o dono não sabe quando a conversa encosta no teto nem o que a compactação já comeu |
+| **Status** | 📋 não iniciado |
+| **Pedido** | "O que eu quero é conseguir ver o contexto atual entendeu?" |
+| **Problema que resolve** | O tamanho do que vai para o modelo **já é calculado** — `montarPayload` devolve `tokens`/`disponivel` e `apertarRodada` atualiza os dois a cada rodada de ferramenta — mas a tela só mostra isso quando a compactação **age** (`textoCompacto` em `Chat.tsx`). Sem compactar, o número existe no servidor e não aparece em lugar nenhum. |
+| **Desenho** | Medidor fixo no rodapé da caixa de conversa: `18.400 / 29.900 tokens (62% · do último envio · janela configurada)`. Ao lado, quando houver compactação, o selo do que foi resumido/cortado (o texto que já existe, promovido a permanente). Os números vêm de `compactacao.tokens` e `compactacao.disponivel` do último `fim`. |
+| **Regras que a tela tem que obedecer** | (1) Mostrar o payload **depois** de compactar e do aperto da última rodada — nunca a soma do histórico gravado, que é sempre maior e mente. (2) A compactação **não é persistida**: é re-feita a cada turno, então o valor é o **do último envio**, e a tela precisa dizer isso, não parecer termômetro ao vivo. (3) `disponivel` = janela − reserva − tokens das ferramentas: ligar/desligar as ferramentas do nexos muda o percentual da mesma conversa, e isso é esperado. (4) O número **cai** no meio da conversa quando a compactação agir — visível com o selo, para não ler como bug. |
+| **Limite honesto** | A contagem é a heurística da casa (4 caracteres por token). A contagem real do provedor é a T055 (passo 2); enquanto ela não chega, o medidor é estimado e tem que se dizer estimado onde couber. |
+| **Prova exigida na execução** | Print no painel de três casos, com o número da tela batendo com `compactacao.tokens`/`disponivel` da resposta da API: turno sem ferramenta, turno com ferramenta (o valor muda entre rodadas) e turno em que a compactação age (o valor cai e o selo aparece). |
+
+### T055 — Ver a velocidade em que os tokens chegam (tok/s)
+
+| Campo | Conteúdo |
+|---|---|
+| **Módulo** | chat (`src/provider.ts`) + painel (`Chat.tsx`, `lib/conversa.ts`) |
+| **Prioridade** | 🟠 Alta |
+| **Status** | 📋 não iniciado |
+| **Pedido** | "a velocidade em que os tokens chegam" |
+| **Problema que resolve** | Não existe tok/s em lugar nenhum. O que existe é `custo.tok_out` (heurística) e `custo.ms` gravados por turno — e o `ms` é o **turno inteiro**: inclui a espera do provedor antes da primeira letra e a execução de cada ferramenta. Dividir um pelo outro dá um número errado e faz um modelo rápido parecer lento. |
+| **Desenho, passo 1 (sem depender do provedor)** | Medir por rodada a janela **primeira letra → última letra** do que o modelo escreve (`narracao_viva`/`delta`), somar as janelas do turno e dividir pelos tokens escritos. Publicar no cabeçalho do rastro do turno, ao lado do tempo que já está lá (`21 etapas · 14,2 s · 62 tok/s`), e gravar em `chat_mensagens.custo` (`ms_escrita`, `tok_s`) para o selo sobreviver a reabrir a conversa. A compactação não contamina nada: ela é determinística, sem chamada a modelo. |
+| **Desenho, passo 2 (contagem real)** | Mandar `stream_options: {include_usage: true}` no corpo de `/chat/completions` e ler o `usage` do último pedaço SSE: `prompt_tokens` vira o contexto real (a T054 para de ser estimada) e `completion_tokens` vira a velocidade real. Guardas: gateway que ignora o campo devolve `usage` vazio — tem que cair na heurística sem quebrar e marcar de onde veio o número; gateway de raciocínio cobra tokens do pensamento, então `prompt_tokens` pode ser maior que o payload estimado. |
+| **Prova exigida na execução** | No mesmo turno real: `tok/s` da tela contra `completion_tokens / ms_escrita` reportado pelo provedor (diferença declarada), e um turno com ferramenta mostrando que a espera da ferramenta **não** entrou na velocidade. Print nos dois casos. |
 
 ## Ideias ainda não numeradas
 
