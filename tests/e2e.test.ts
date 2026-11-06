@@ -1719,6 +1719,7 @@ test("nexos v2 — suíte completa", async (t) => {
       "const t=setInterval(()=>{",
       "if(k<pecas.length){res.write('data: '+JSON.stringify({choices:[{delta:{content:pecas[k]}}]})+'\\n\\n');k++;return;}",
       "clearInterval(t);",
+      "if(nome==='fluxousage'){res.write('data: '+JSON.stringify({choices:[],usage:{prompt_tokens:12000,completion_tokens:31,total_tokens:12031}})+'\\n\\n');res.write('data: [DONE]\\n\\n');res.end();return;}",
       "res.write('data: '+JSON.stringify({choices:[{delta:{tool_calls:[{index:0,id:'f1',type:'function',function:{name:'search',arguments:JSON.stringify({query:'nota fiscal',k:3})}}]}}]})+'\\n\\n');",
       "res.write('data: [DONE]\\n\\n');res.end();},4);",
       "return;",
@@ -1799,6 +1800,50 @@ test("nexos v2 — suíte completa", async (t) => {
     const evFe = fluxoRes.eventos.find((e) => e.tipo === "ferramenta") ?? {};
     f.check("o evento de ferramenta ao vivo traz servidor, nome e tempo", evFe.servidor === "nexos" && evFe.nome === "search" && evFe.ok === true && Number(evFe.ms) > 0, evFe);
     f.check("2 rodadas: pensar + responder", dados.rodadas === 2 && dados.mcp_interno === true, { rodadas: dados.rodadas, mcp: dados.mcp_interno });
+
+    /* v3.73 (T054/T055): o `fim` publica o que foi MEDIDO do pedido. O provedor falso deste
+       fluxo não devolve `usage`, então o número tem que sair declarado como estimativa da casa
+       (chars ÷ 4) — e as três fatias têm que fechar com o total (prova de que ferramenta não é
+       contada duas vezes, o defeito que o medidor antigo escondia). Limite honesto: em teste o
+       prompt é curto; o que se contratualiza aqui é a FORMA e a SOMA, não o tamanho real. */
+    const custo9 = (dados.custo ?? {}) as Record<string, any>;
+    const ctx9 = (custo9.ctx ?? {}) as Record<string, any>;
+    f.check("o `fim` traz o retrato do contexto do envio (T054)", Number(ctx9.tokens) > 0 && Number(ctx9.disponivel) > 0, custo9);
+    f.check("as três fatias somam o total do medidor (T054)", Math.abs(Number(ctx9.detalhe?.prompt ?? 0) + Number(ctx9.detalhe?.conversa ?? 0) + Number(ctx9.detalhe?.ferramentas ?? 0) - Number(ctx9.tokens)) <= 2, { fatias: ctx9.detalhe, total: ctx9.tokens });
+    f.check("o teto já desconta a reserva de saída (T054)", Number(ctx9.disponivel) < Number(ctx9.janela) && Number(ctx9.reserva) > 0, { disponivel: ctx9.disponivel, janela: ctx9.janela, reserva: ctx9.reserva });
+    f.check("sem contagem do provedor, o número se declara estimado (T054)", ctx9.origem_contagem === "estimativa" && ctx9.estimado === true, { origem: ctx9.origem_contagem, estimado: ctx9.estimado });
+    /* v3.73 (T055): o cronômetro da ESCRITA só existe onde houve streaming medido — sem medição
+       o campo não aparece, porque número inventado na tela é pior que tela sem número. */
+    f.check("o `fim` mede a escrita: 1ª letra, janela de escrita e tok/s (T055)", Number(custo9.ms_escrita) > 0 && Number(custo9.tok_s) > 0 && Number(custo9.ms_ate_primeira_letra) >= 0, { ate_a_letra: custo9.ms_ate_primeira_letra, escrita: custo9.ms_escrita, tok_s: custo9.tok_s });
+    /* v3.73.1 (T055): contrato do NUMERADOR, que é onde o número estava errado. O defeito real
+       era chamar `estimarTokens(charsEscritos)` — a função STRINGIFICA o argumento, então os 33
+       caracteres escritos viravam "33" (2 chars) = 1 tok e o tok/s caía para 1,5. A régua do
+       tok/s tem que ser a MESMA do orçamento: caracteres escritos ÷ 4. */
+    f.check("o numerador do tok/s são os caracteres escritos na régua da casa (chars ÷ 4) (T055)",
+      Number(custo9.chars_escritos) >= 8 && Number(custo9.tok_escrita) === Math.ceil(Number(custo9.chars_escritos) / 4),
+      { chars: custo9.chars_escritos, tok_escrita: custo9.tok_escrita, tok_s: custo9.tok_s, narracao: vivas9.join("").slice(0, 40) });
+
+    /* v3.73 (T054 passo 2): quando o provedor devolve `usage`, a contagem dele assume o medidor
+       (o `~` sai da tela) e as fatias — que o provedor não fornece — são escaladas para fechar
+       com o total dele; a tela declara que as fatias ainda são a régua da casa. */
+    console.log("-- /chat/stream com o provedor contando o contexto (T054 passo 2)");
+    await call("PUT", "/config/provider", {
+      key: OPKEY,
+      corpo: { tipo: "litellm", base_url: "http://127.0.0.1:9914/v1", modelo: "fluxousage", mcp_interno: true, max_rodadas: 2, ativo: true, global: true },
+    });
+    const fluxoUso = await fluxo(TESTKEY, { pergunta: "quanto do teto esta pergunta ocupa?", memoria: "suite-v29-uso" });
+    const dadosUso = (fluxoUso.eventos.find((e) => e.tipo === "fim")?.dados ?? {}) as Record<string, any>;
+    const custoUso = (dadosUso.custo ?? {}) as Record<string, any>;
+    const ctxUso = (custoUso.ctx ?? {}) as Record<string, any>;
+    f.check("veio `usage`, o medidor passa a mostrar a contagem do provedor (T054)", ctxUso.origem_contagem === "provedor" && ctxUso.estimado === false && Number(ctxUso.tokens) === 12000, { origem: ctxUso.origem_contagem, tokens: ctxUso.tokens });
+    f.check("as fatias escaladas fecham com o total do provedor (T054)", Math.abs(Number(ctxUso.detalhe?.prompt ?? 0) + Number(ctxUso.detalhe?.conversa ?? 0) + Number(ctxUso.detalhe?.ferramentas ?? 0) - Number(ctxUso.tokens)) <= 2, { fatias: ctxUso.detalhe, total: ctxUso.tokens });
+    f.check("a saída contada pelo provedor aparece separada da estimativa (T055)", Number(custoUso.tok_out_provedor) === 31 && Number(custoUso.tok_out) > 0, { real: custoUso.tok_out_provedor, estimado: custoUso.tok_out });
+    /* a barra do compositor lê o `custo.ctx` GRAVADO na mensagem: se reabrir a conversa não
+       devolver o retrato, o medidor some ao trocar de aba. */
+    const histT054 = await call("GET", `/chat?memoria=${encodeURIComponent(GAV)}`, { key: TESTKEY });
+    const linhasT054 = (histT054.json?.mensagens ?? []) as any[];
+    const comRetrato = linhasT054.filter((m) => Number(m?.custo?.ctx?.tokens) > 0 && Number(m?.custo?.ctx?.disponivel) > 0);
+    f.check("reabrir a conversa devolve o retrato gravado na mensagem (T054)", comRetrato.length >= 1, { linhas: linhasT054.length, comRetrato: comRetrato.length });
 
     /* o modelo que nunca termina: pensa, pede ferramenta, pensa de novo... até o freio */
     await call("PUT", "/config/provider", {
@@ -2167,7 +2212,12 @@ test("nexos v2 — suíte completa", async (t) => {
     const got = await fluxo(OPKEY, { pergunta: "goteja devagar por favor", memoria: "suite-v32" });
     const durG = Date.now() - iniG;
     const tiposG = got.eventos.map((e: any) => e.tipo);
-    const textoG = got.eventos.filter((e: any) => e.tipo === "delta").map((e: any) => String(e.texto ?? "")).join("");
+    /* v3.72: o texto da resposta anda na linha viva da trilha e fecha em `mover_resposta`
+       — sem ferramenta no meio, `mover_resposta` traz o texto INTEIRO do gotejamento.
+       O contrato é o mesmo (pedaço 13 + marcador chegaram), a casa do texto mudou. */
+    const textoG = got.eventos
+      .filter((e: any) => e.tipo === "delta" || e.tipo === "mover_resposta")
+      .map((e: any) => String(e.texto ?? "")).join("");
     f.check("resposta que escreve devagar por ~15s NÃO é cortada", tiposG.includes("fim") && !tiposG.includes("erro"), tiposG.join(","));
     f.check("todos os pedaços do gotejamento chegaram", textoG.includes("g13") && textoG.includes("[fim-goteja]"), textoG.slice(0, 80));
     f.check("durou muito mais que o orçamento de silêncio (prova de que duração não mata)", durG > 8000, `${durG}ms com silencio=4s`);
@@ -3062,7 +3112,10 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.check("a fala fecha a linha viva (evento próprio, antes da ferramenta, sem texto duplicado)", evFala315.length === 1 && /vou ver as gavetas/.test(String(evFala315[0].texto)), JSON.stringify(evFala315).slice(0, 160));
     f.check("o texto vivo chega ANTES do fechamento e da ferramenta (ordem na trilha)", (() => {
       const t = rod.eventos.map((e: any) => e.tipo);
-      const fimViva = t.lastIndexOf("narracao_viva");
+      /* v3.73.2: `lastIndexOf` apanhava a linha viva da RESPOSTA (rodada 2), que por design
+         vem depois da `fala` da rodada 1. A intenção do contrato é a PRIMEIRA linha viva —
+         a narração do caminho, que tem de chegar antes de fechar e antes da ferramenta. */
+      const fimViva = t.indexOf("narracao_viva");
       return fimViva >= 0 && t.indexOf("fala") > fimViva && t.indexOf("ferramenta") > t.indexOf("fala");
     })(), rod.eventos.map((e: any) => e.tipo).join(","));
     f.check("SEM FERRAMENTA, A RESPOSTA MUDA DE CASA UMA VEZ: `mover_resposta` entrega o texto da trilha", movidasV315.length === 1 && String(movidasV315[0].texto ?? "").includes("PRONTO-V315") && Number(movidasV315[0].caracteres) === String(movidasV315[0].texto ?? "").length, JSON.stringify(movidasV315.map((e: any) => ({ n: e.caracteres, t: String(e.texto).slice(0, 40) }))));
@@ -4706,7 +4759,14 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     const fluxoRes = { eventos };
     const tipos = fluxoRes.eventos.map((e) => e.tipo);
     const dadosFim = fluxoRes.eventos.find((e) => e.tipo === "fim")?.dados ?? {};
-    f.check("o resgate avisa a tela para apagar o texto vazado", tipos.includes("descartar"), tipos.join(","));
+    /* v3.72: não existe mais "apagar o texto da bolha" — o texto vazado nasce na LINHA VIVA
+       da trilha e fecha como `fala` quando o resgate o converte em ferramenta. O contrato
+       honesto é: o HTML nunca passou pela bolha (nem em delta, nem em mover_resposta) e a
+       linha do caminho fechou antes da ferramenta. */
+    const vazouBolha = fluxoRes.eventos
+      .filter((e) => e.tipo === "delta" || e.tipo === "mover_resposta")
+      .some((e) => /<tool_call>|<function=|DOCTYPE/.test(String(e.texto ?? "")));
+    f.check("o texto vazado nunca chegou à bolha; a linha viva fechou como fala", !vazouBolha && tipos.includes("fala") && tipos.indexOf("fala") < tipos.indexOf("ferramenta"), tipos.join(","));
     f.check("o card da tela nasce no fluxo", tipos.includes("tela") && (dadosFim.telas ?? []).length === 1, tipos.join(","));
     let bolha = "";
     for (const e of fluxoRes.eventos) {
