@@ -9,8 +9,10 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 
 | T### | Nome | Módulo | Prioridade | Status | Link |
 |---|---|---|---|---|---|
+| T056 | Guarda de chamada repetida no laço do agente | chat | 🟠 Alta | 📋 Aguardando OK | [#t056](#t056) |
+| T057 | Resultado grande de ferramenta vira arquivo, não cauda jogada fora | chat | 🟠 Alta | 📋 Aguardando OK | [#t057](#t057) |
 
-> **Fila zerada em 05/11/2026:** T054 e T055 foram entregues na 3.73.0 (a conta do que entrou fica na tabela "Correções já no ar").
+> **Fila zerada em 05/11/2026:** T054 e T055 foram entregues na 3.73.0 (a conta do que entrou fica na tabela "Correções já no ar"). Em **06/11/2026** entraram T056 e T057, apontadas pela comparação do harness do nexos com o do DeepSeek Harness — **aguardam OK do dono**.
 
 > T052 (sandbox Python) e T053 (isolamento do sandbox) foram **retiradas da fila por enquanto**, a pedido do dono em 04/11/2026. O que já estava entregue nelas continua no ar (v3.50.0, v3.51.0, v3.53.0, v3.63.0); o desenho e as etapas que faltavam ficam no `git log`.
 
@@ -46,6 +48,34 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 | 3.52.0 | `analisar_imagem` baixava a imagem sem user-agent (sites exigentes, como o Wikimedia, devolviam 400) e aceitava endereço interno (dava para pedir `127.0.0.1:8001`, o embedder). Agora usa o mesmo UA de navegador do `web_open` e passa pela mesma trava de endereço interno, inclusive a cada salto de redirecionamento. | Teste de todas as 57 ferramentas (30/10), chamando cada uma de verdade. |
 
 ---
+
+### T056 — Guarda de chamada repetida no laço do agente
+
+| Campo | Conteúdo |
+|---|---|
+| **Módulo** | chat (`src/provider.ts`), com apoio do rastro (`Chat.tsx`) |
+| **Prioridade** | 🟠 Alta — chamada repetida executa de verdade: paga a ferramenta, infla o contexto e segura o turno |
+| **Status** | 📋 Aguardando OK |
+| **Pedido** | "Acho que 1 e 2 podem ir pro próximos passos" (06/11) — item 1 da leitura do harness do nexos contra o DeepSeek Harness |
+| **Antes (medido)** | O laço tem só dois freios: `cfg.max_rodadas` (padrão 5 em `src/provider.ts:46`; faixa aceita 0–60 em `:471`; é valor da CONTA desde a 3.69, `:279` e `:301`) e o orçamento de silêncio (`SILENCIO_PADRAO_S = 180` em `:63`). Não existe detector de chamada repetida: `grep -rin` por "repetida" ou "repeat" em `src/` devolve só o `.repeat(` de `src/conversor.ts:149`. Medido no banco de produção (coluna `chat_mensagens.ferramentas`, lido em 06/11): dos **12** turnos com ferramenta, **2** tiveram chamada idêntica repetida (mesmo nome e mesmos argumentos), **3** chamadas repetidas no total; pior caso é a mensagem `id 558` — `baixar_arquivo` chamado **3 vezes com os mesmos argumentos** num turno de **32 chamadas**. |
+| **Como deve ficar** | Chave da chamada = servidor + nome + argumentos normalizados (JSON com chaves em ordem estável), comparada com as chamadas já feitas **neste turno**. A estrutura já existe: o array `chamadas` guarda `servidor`, `nome`, `args` mascarados, `ok`, `resumo` e `ms` de cada chamada (`src/provider.ts:1752-1759`) e é gravado em `chat_mensagens.ferramentas` (`:1880`). Na **2ª** vez idêntica: executa (o estado da máquina pode ter mudado) e injeta no payload o lembrete — "você já chamou isto com estes argumentos, o resultado foi X; mude o argumento ou responda" — mais uma linha no rastro para o dono ver. Na **3ª** vez idêntica: o laço encerra e a resposta diz que parou por repetição. Régua: `repeat-tool-reminder` do `dsh`, que detecta e injeta aviso em vez de deixar o laço girar. |
+| **Decisão pendente** | Parar o turno na 3ª chamada idêntica (✅ **Recomendado** — é o que corta custo, e o aviso na resposta explica o corte) × só injetar o lembrete e deixar `max_rodadas` governar. |
+| **Impacto medido** | Hoje a repetição não é contada em lugar nenhum — os números acima vieram do JSON de `ferramentas`, lido a posteriori. O detector passa a registrar a repetição no rastro, o que também dá a régua para separar repetição legítima (a máquina mudou de estado entre as chamadas) de laço preso. |
+| **Prova exigida na execução** | Teste de contrato com provedor falso mandando a mesma chamada três vezes: na 2ª rodada o payload leva o lembrete injetado; na 3ª o turno encerra com aviso de repetição e a ferramenta **não** roda uma quarta vez. Teste mostrando que chamada com argumento **diferente** não é marcada (senão vira trava de ferramenta legítima — ex.: `baixar_arquivo` de arquivos diferentes). Print do rastro no painel com a linha da repetição. |
+
+### T057 — Resultado grande de ferramenta vira arquivo, não cauda jogada fora
+
+| Campo | Conteúdo |
+|---|---|
+| **Módulo** | chat (`src/provider.ts`, `src/ferramentas.ts`) + entrega de arquivo (`src/anexos.ts`) |
+| **Prioridade** | 🟠 Alta — é o que impede o agente de trabalhar meio cego em lista grande, log grande e planilha grande |
+| **Status** | 📋 Aguardando OK |
+| **Pedido** | "Acho que 1 e 2 podem ir pro próximos passos" (06/11) — item 2 da leitura do harness do nexos contra o DeepSeek Harness |
+| **Antes (medido)** | Toda saída de ferramenta passa por `paraTexto` (`src/ferramentas.ts:437-441`), que corta em `MAX_TEXTO_MODELO = 4000` caracteres (`:55`) deixando só o aviso `… [cortado: N caracteres]` — aplicado na origem da saída nas ferramentas internas (`:388`, `:391`) e nas MCP (`:424`). Existe um segundo teto, `TETO_FERRAMENTA = 6000` (`src/provider.ts:65`), aplicado em `:1800` com `compactacao.aparadas++` em `:1802`, mas **ele não chega a valer no caminho normal**: `brutoTool` já é `paraTexto(exec.saida)` (`:1777`), então o texto nunca passa de 4000. A cauda cortada **não fica em lugar nenhum**: o rastro grava a etapa sem a saída (`:1760` grava servidor, nome, ok e ms) e a tela recebe `resumo: resumirSaida(...)`, cortado em 300 caracteres (`src/ferramentas.ts:489-492`). O modelo vê o começo, o dono não vê nada e ninguém recupera o resto — `apertarRodada` (`src/compactar.ts:446`, chamado antes de cada rodada acima da primeira, `src/provider.ts:1528-1532`) aperta rodadas inteiras depois, mas o que já foi cortado não volta. |
+| **Como deve ficar** | Passou do limiar, a saída **completa** vira arquivo na pasta da conta e no payload entra uma **referência**: caminho, tamanho total, primeiras e últimas linhas, e a instrução de que o resto se lê com a própria ferramenta de leitura. O modelo recupera o trecho que precisa na rodada seguinte (pagando o contexto só quando pede), o dono ganha um anexo baixável na conversa, e o medidor da T054 mostra o custo da referência em vez do despejo. Régua: `spill/` do `dsh` (resultado grande vira arquivo + referência). O nexos já tem o caminho de entrega de arquivo na conversa (`nexos.anexar`, v3.67) — o pedaço novo é só o despejo automático. |
+| **Decisão pendente** | (a) O limiar: manter os **4000** caracteres de hoje como o ponto em que a saída **vira arquivo** em vez de ser cortada (sugerido, aguardando confirmação do dono). (b) Onde o arquivo mora: pasta da conta, fora da base de conhecimento (✅ **Recomendado** — não polui a busca semântica das gavetas) × mandar para o RAG como documento. |
+| **Impacto medido** | Não mensurável hoje: o texto cortado não é gravado e o contador `aparadas` não é publicado nem persiste (as três ocorrências em `src/` são memória) — não há como saber quantos turnos já perderam informação por corte. O próprio item entrega a régua: gravar no rastro "resultado aparado de N caracteres, salvo em <caminho>". |
+| **Prova exigida na execução** | Uma ferramenta devolvendo mais de 4000 caracteres (ex.: `ler_arquivo` de arquivo grande): (1) a conversa mostra a referência com o tamanho real e o arquivo existe na pasta da conta; (2) na rodada seguinte o modelo **cita um dado que estava depois do 4001º caractere** — prova de que relê; (3) o medidor da T054 mostra o custo da referência, não o do despejo; (4) teste de contrato mostrando que saída abaixo do limiar entra como hoje, sem mudança. Print do rastro nos dois casos. |
 
 ## Ideias ainda não numeradas
 
