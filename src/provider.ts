@@ -15,7 +15,7 @@ import { Usuario, log, tenantFor } from "./config";
 import { REGRAS_CASA } from "./regras";
 import { erro409, erro422 } from "./errors";
 import { q } from "./db";
-import { apertarRodada, custoDoPayload, type MsgChat, montarPayload, OPCOES_PADRAO, type Opcoes } from "./compactar";
+import { apertarRodada, CHARS_POR_TOKEN, custoDoPayload, type MsgChat, montarPayload, OPCOES_PADRAO, type Opcoes } from "./compactar";
 import { abrirAnexo, type AnexoMeta } from "./anexos";
 import { podeVerProvedor } from "./provedores";
 import { MAX_TELAS_TURNO, htmlParcial, type Tela } from "./telas";
@@ -921,6 +921,9 @@ export async function chamarModelo(
   /** tudo que o modelo pensou nesta rodada (vazio nos modelos que não expõem) */
   pensamento: string;
   ms: number;
+  /** v3.73: a contagem que o PRÓPRIO provedor devolveu (`usage`), se ele devolveu.
+   *  `prompt_tokens` é o contexto REAL daquela chamada — é o número honesto do medidor. */
+  uso: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
 }> {
   /* v3.2: `timeoutMs` deixou de ser "tempo total da resposta" e virou ORÇAMENTO DE SILÊNCIO.
      O valor da tela (provider_config.silencio_s) manda em cima do padrão do código. */
@@ -941,6 +944,10 @@ export async function chamarModelo(
     stream: Boolean(opts.stream && opts.onDelta),
   };
   if (opts.tools?.length) corpo.tools = opts.tools;
+  /* v3.73 (T054/T055): pedir a CONTAGEM real ao provedor. No SSE a contagem vem no chunk
+     final (`choices` vazio + `usage`), e só aparece se o pedido pedir. Quem não conhece o
+     campo simplesmente ignora — nesse caso continuamos com a nossa régua, avisando. */
+  if (corpo.stream) corpo.stream_options = { include_usage: true };
   let r: Response;
   try {
     r = await fetch(`${cfg.base_url.replace(/\/+$/, "")}/chat/completions`, {
@@ -964,6 +971,7 @@ export async function chamarModelo(
     const pecas: string[] = [];
     const pensado: string[] = [];
     const chamadas: Record<number, { id: string; nome: string; args: string }> = {};
+    let uso: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null = null;
     const leitor = r.body.getReader();
     const dec = new TextDecoder();
     let sobra = "";
@@ -982,6 +990,9 @@ export async function chamarModelo(
         } catch {
           continue; /* comentário de manutenção de conexão */
         }
+        /* v3.73: o chunk final do stream traz `usage` com `choices` vazio — é a contagem
+           real do provedor, e é ele que passa a valer no medidor quando for plausível */
+        if (j?.usage && typeof j.usage === "object") uso = j.usage;
         const delta = j?.choices?.[0]?.delta ?? {};
         /* raciocínio do modelo (v3.13): os três nomes que os providers usam para o mesmo campo */
         const pens =
@@ -1021,6 +1032,7 @@ export async function chamarModelo(
       texto: texto.trim(),
       pensamento: pensado.join("").trim(),
       ms: Date.now() - inicio,
+      uso,
     };
   }
 
@@ -1049,6 +1061,7 @@ export async function chamarModelo(
     texto: conteudo.trim(),
     pensamento: String(mensagem.reasoning_content ?? mensagem.reasoning ?? mensagem.thinking ?? "").trim(),
     ms: Date.now() - inicio,
+    uso: json?.usage && typeof json.usage === "object" ? json.usage : null,
   };
 }
 
@@ -1306,6 +1319,27 @@ export async function responderChat(
     const ultima = [...mensagens].reverse().find((m) => m.role === "user");
     if (ultima) ultima.content = String(ultima.content ?? "") + nota;
   }
+  /* v3.73 (T054): as TRÊS FATIAS do que vai no pedido — prompt de sistema, conversa (histórico
+     + pergunta + nota de anexo) e ferramentas. A soma delas É o total do medidor: nada de
+     número que não bate com a régua usada para cortar. Calculado sobre as mensagens REAIS
+     (depois da nota de anexo), não sobre o plano teórico. */
+  const ferramentasTokens = plano.ferramentas;
+  const reparticao = (msgs: Mensagem[]) => {
+    let prompt = 0;
+    let conversa = 0;
+    for (const m of msgs) {
+      const c = custoDoPayload([m]);
+      if (m.role === "system") prompt += c;
+      else conversa += c;
+    }
+    return { prompt, conversa, ferramentas: ferramentasTokens };
+  };
+  /** total estimado do pedido (as três fatias somadas) */
+  const estimadoDoPedido = (msgs: Mensagem[]) => {
+    const f = reparticao(msgs);
+    return f.prompt + f.conversa + f.ferramentas;
+  };
+  let fatias = reparticao(mensagens);
   const compactacao = {
     memoria_turnos: cfg.memoria_turnos,
     historico_lido: historico.length,
@@ -1316,11 +1350,41 @@ export async function responderChat(
     pares: plano.pares,
     aparadas: plano.cortadas,
     descartadas: plano.descartadas,
-    tokens: plano.tokens,
+    /* v3.73: `tokens` é o PEDIDO INTEIRO (prompt + conversa + ferramentas) e `disponivel` é o
+       teto (janela − reserva). Antes as ferramentas entravam nos dois lados. */
+    tokens: fatias.prompt + fatias.conversa + fatias.ferramentas,
     disponivel: plano.disponivel,
+    /** T054: para onde foi o contexto — a soma fecha com `tokens` (ou com o total real do
+       provedor, quando ele contar: aí as fatias são proporcionalmente escaladas) */
+    detalhe: fatias,
+    /** T054: enquanto o provedor não conta, o número é uma ESTIMATIVA (chars ÷ 4) e a tela
+       escreve isso — o símbolo de aproximado é consequência, não decoração */
+    origem_contagem: "estimativa" as "estimativa" | "provedor",
+    estimado: true,
+    reserva: cfg.reserva_tokens,
     janela: cfg.janela,
     origem_janela: cfg.origem_janela,
     coube: plano.coube,
+  };
+  /** quando o provedor devolver a contagem real, ela substitui a nossa régua (T054 passo 2).
+     Guarda (dsh D4): só vale se o total NÃO for menor que a nossa conta completa da MESMA
+     chamada — envelope idêntico por construção, porque a contagem vem da chamada que acabou
+     de acontecer neste turno. Se vier menor, desconfio e fico com a estimativa. */
+  let totalReal: number | null = null;
+  let tokensSaidaReal = 0;
+  const aplicarContagem = (): void => {
+    if (totalReal === null) return;
+    const estimadoAgora = fatias.prompt + fatias.conversa + fatias.ferramentas;
+    compactacao.origem_contagem = "provedor";
+    compactacao.estimado = false;
+    compactacao.tokens = totalReal;
+    /* o provedor não diz a partição: as fatias continuam heurísticas, escaladas para fechar
+       com o total real — a tela declara isso no painel de detalhe */
+    const escala = estimadoAgora > 0 ? totalReal / estimadoAgora : 1;
+    const prompt = Math.round(fatias.prompt * escala);
+    const ferramentas = Math.round(fatias.ferramentas * escala);
+    compactacao.detalhe = { prompt, ferramentas, conversa: Math.max(0, totalReal - prompt - ferramentas) };
+    compactacao.coube = totalReal <= compactacao.disponivel;
   };
 
   const chamadas: ChamadaFerramenta[] = [];
@@ -1372,6 +1436,27 @@ export async function responderChat(
   };
 
   const fontes = new Set<string>();
+  /* v3.73 (T055): o cronômetro da ESCRITA, separado do tempo do turno inteiro. É a lição do
+     dsh: "21 etapas, 14s" não diz se o modelo travou antes de começar ou escreveu devagar.
+     Duas janelas medidas no streaming, sem estimativa: até a 1ª letra e da 1ª à última. */
+  let msAtePrimeiraLetra = 0;
+  let msEscrita = 0;
+  let charsEscritos = 0;
+  /** v3.73.1 (T055): o numerador do tok/s são os CARACTERES escritos, convertidos na MESMA
+     régua que corta o payload (chars ÷ 4). Passar o contador para `estimarTokens` stringificava
+     o número ("116" → 3 chars → 1 tok) e derrubava o tok/s para 1,5 num turno de ~35. */
+  const medicaoEscrita = (): Record<string, unknown> => {
+    if (!(msEscrita > 0) || !(charsEscritos > 0)) return {}; /* sem medição, sem número */
+    const tok = Math.ceil(charsEscritos / CHARS_POR_TOKEN);
+    return {
+      ms_ate_primeira_letra: msAtePrimeiraLetra,
+      ms_escrita: msEscrita,
+      chars_escritos: charsEscritos,
+      tok_escrita: tok,
+      tok_s: Math.round((tok / (msEscrita / 1000)) * 10) / 10,
+      origem_tok_s: "estimativa",
+    };
+  };
   /* embrulho único da saída: caminho normal e caminho cancelado dizem a mesma coisa */
   const empacotar = (respostaTexto: string, avisoTexto: string | null, cancelada: boolean) => ({
     resposta: respostaTexto,
@@ -1397,8 +1482,26 @@ export async function responderChat(
     tem_system_prompt: Boolean(cfg.system_prompt.trim()),
     compactacao,
     ms: Date.now() - inicio,
-    /** v3.18 (T018): tokens de entrada (conta do plano de contexto) e de saída (resposta) */
-    custo: { tok_in: compactacao.tokens, tok_out: custoDoPayload([{ content: respostaTexto }]) },
+    /** v3.18 (T018): tokens de entrada (conta do plano de contexto) e de saída (resposta).
+     *  v3.73 (T055): + o que o provedor contou, + o cronômetro da ESCRITA (só existe no
+     *  streaming medido; sem medição não publico número inventado) e o retrato do contexto
+     *  (`ctx`), que é o que a barra do compositor reada ao reabrir a conversa. */
+    custo: {
+      tok_in: compactacao.tokens,
+      tok_out: custoDoPayload([{ content: respostaTexto }]),
+      ...(tokensSaidaReal > 0 ? { tok_out_provedor: tokensSaidaReal } : {}),
+      ...medicaoEscrita(),
+      ctx: {
+        tokens: compactacao.tokens,
+        disponivel: compactacao.disponivel,
+        detalhe: compactacao.detalhe,
+        origem_contagem: compactacao.origem_contagem,
+        estimado: compactacao.estimado,
+        janela: compactacao.janela,
+        reserva: compactacao.reserva,
+        origem_janela: compactacao.origem_janela,
+      },
+    },
     aviso: avisoTexto,
   });
 
@@ -1433,10 +1536,22 @@ export async function responderChat(
       mensagens.push(...(apertado.mensagens as Mensagem[]));
       compactacao.aparadas += apertado.cortadas;
       compactacao.descartadas += apertado.descartadas;
-      compactacao.tokens = apertado.tokens;
       compactacao.disponivel = apertado.disponivel;
-      if (apertado.tokens > apertado.disponivel) compactacao.coube = false;
+      /* a contagem real que veio de uma chamada ANTERIOR descreve o payload de antes: com o
+         aperto ela deixa de ser deste pedido, então volta-se à estimativa até a próxima medida */
+      totalReal = null;
+      compactacao.origem_contagem = "estimativa";
+      compactacao.estimado = true;
+      fatias = reparticao(mensagens);
+      compactacao.detalhe = fatias;
+      compactacao.tokens = fatias.prompt + fatias.conversa + fatias.ferramentas;
+      if (compactacao.tokens > compactacao.disponivel) compactacao.coube = false;
     }
+    /* v3.73 (T055): relógio desta chamada. `tLetra` é a primeira letra que o provedor escreveu
+       (o "travou?" do dono), `tUltima` fecha a janela de escrita. */
+    const tChamada = Date.now();
+    let tLetra = 0;
+    let tUltimaLetra = 0;
     let r: Awaited<ReturnType<typeof chamarModelo>>;
     try {
       r = await chamarModelo(cfg, mensagens, {
@@ -1466,7 +1581,11 @@ export async function responderChat(
                  pedaço é escrito como narração viva, dentro do rastro: se vier ferramenta ele
                  fica lá (fala); se não vier, ele é a resposta e muda de casa no fim da rodada.
                  Não existe mais "pintar na bolha e apagar depois". */
-              if (!narraViva) narraInicio = Date.now();
+              const agora = Date.now();
+              if (!tLetra) tLetra = agora; /* v3.73: a primeira letra fecha o "até a 1ª letra" */
+              tUltimaLetra = agora;
+              charsEscritos += t.length;
+              if (!narraViva) narraInicio = agora;
               narraViva += t;
               emitir({ tipo: "narracao_viva", texto: t });
             }
@@ -1488,6 +1607,24 @@ export async function responderChat(
       /* v3.67: resposta vazia não é erro de servidor — o turno segue e a tela mostra o aviso */
       if (e instanceof RespostaVazia) break;
       throw e;
+    }
+    /* v3.73 (T055): janela de ESCRITA desta rodada — nunca o turno inteiro. Se a rodada não
+       escreveu nada (só chamou ferramenta sem texto), não soma nada: não invento número. */
+    if (tLetra) {
+      msAtePrimeiraLetra += Math.max(0, tLetra - tChamada);
+      msEscrita += Math.max(0, tUltimaLetra - tLetra);
+    }
+    /* v3.73 (T054): a contagem REAL do provedor substitui a nossa régua quando é plausível —
+       `prompt_tokens` não pode ser menor que a conta completa da MESMA chamada (envelope
+       idêntico por construção: a conta veio da chamada que acabou de acontecer). */
+    if (r.uso && Number(r.uso.prompt_tokens) > 0) {
+      const estimadoDestaChamada = estimadoDoPedido(mensagens);
+      if (Number(r.uso.prompt_tokens) >= estimadoDestaChamada) {
+        totalReal = Math.floor(Number(r.uso.prompt_tokens));
+        tokensSaidaReal += Math.max(0, Math.floor(Number(r.uso.completion_tokens ?? 0)));
+        fatias = reparticao(mensagens);
+        aplicarContagem();
+      }
     }
     let pedidas = r.message.tool_calls ?? [];
     /* v3.70 — resgate: o modelo escreveu a chamada no TEXTO em vez de usar `tool_calls`.
@@ -1669,12 +1806,18 @@ export async function responderChat(
     /* v3.18 (T001): "parar" não é falha — o que chegou ao usuário fica gravado como resposta
        parcial, a tarefa fecha como cancelada e nenhuma frase de erro aparece. */
     if (String((e as Error)?.message ?? e) !== "cancelado-pelo-usuario") throw e;
-    const parcial = emitido.trim();
+    /* v3.73.2: desde o v3.72 o texto da rodada mora na LINHA VIVA da trilha (`narracao_viva`)
+       e só entra em `emitido` quando a rodada fecha. Cancelar no meio de uma rodada sem
+       ferramenta derrubava `emitido` vazio — jogava fora o que a pessoa já estava lendo.
+       A linha viva já zerou quando virou resposta (`mover_resposta` a esvazia antes de
+       somar em `emitido`), então soma-las nunca duplica texto. */
+    const parcial = (emitido + narraViva).trim();
+    const embrulho = empacotar(parcial, "parada pelo usuário — o que chegou ficou gravado", true);
     await gravarMensagens(
       tenant, memoria, pergunta, parcial, chamadas, falas, pensamento.trim(), rastro, [...fontes],
-      cfg.provedor, cfg.modelo, telas, anexos, Date.now() - inicio, anexosDoUsuario,
+      cfg.provedor, cfg.modelo, telas, anexos, Date.now() - inicio, anexosDoUsuario, embrulho.custo,
     );
-    return empacotar(parcial, "parada pelo usuário — o que chegou ficou gravado", true);
+    return embrulho;
   }
 
   /* v3.67: resposta VAZIA (ou só espaço/quebra de linha) não pode virar bolha em branco.
@@ -1700,8 +1843,9 @@ export async function responderChat(
     texto = respostaLimpa;
   }
 
-  await gravarMensagens(tenant, memoria, pergunta, texto, chamadas, falas, pensamento.trim(), rastro, [...fontes], cfg.provedor, cfg.modelo, telas, anexos, Date.now() - inicio, anexosDoUsuario);
-  return empacotar(texto, aviso, false);
+  const embrulho = empacotar(texto, aviso, false);
+  await gravarMensagens(tenant, memoria, pergunta, texto, chamadas, falas, pensamento.trim(), rastro, [...fontes], cfg.provedor, cfg.modelo, telas, anexos, Date.now() - inicio, anexosDoUsuario, embrulho.custo);
+  return embrulho;
 }
 
 async function gravarMensagens(
@@ -1721,6 +1865,10 @@ async function gravarMensagens(
   msTurno = 0,
   /** v3.46: arquivos que a PESSOA anexou (a linha 'user' mostra eles no histórico) */
   anexosDoUsuario: AnexoMeta[] = [],
+  /** v3.73 (T054/T055): o resto do custo que o turno mediu — velocidade da escrita e o retrato
+     do contexto (`ctx`). Vão no mesmo JSONB de sempre: nenhum ALTER, e é isso que faz a barra
+     e os selos sobreviverem a reabrir a conversa. */
+  custoExtra: Record<string, unknown> = {},
 ): Promise<void> {
   await q(
     `INSERT INTO chat_mensagens (tenant, memoria, papel, texto, ferramentas, anexos) VALUES ($1, $2, 'user', $3, NULL, $4::jsonb)`,
@@ -1733,7 +1881,11 @@ async function gravarMensagens(
       JSON.stringify(rastro), JSON.stringify(fontes),
       /* v3.18 (T018): tok_out medido pela mesma régua do orçamento; tok_in fica por conta de quem
          chamou (a resposta pode ser parcial) — gravamos só o que temos aqui. */
-      JSON.stringify({ tok_out: custoDoPayload([{ content: resposta }]), ...(msTurno > 0 ? { ms: msTurno } : {}) }),
+      JSON.stringify({
+        tok_out: custoDoPayload([{ content: resposta }]),
+        ...(msTurno > 0 ? { ms: msTurno } : {}),
+        ...custoExtra,
+      }),
       /* v3.19: quem respondeu (nome do provedor escolhido; null = padrão da casa) */
       provedor, modelo || "",
       /* v3.23: telas geradas neste turno */

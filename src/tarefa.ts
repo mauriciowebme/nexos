@@ -148,11 +148,19 @@ export async function rodarTarefa(id: string, u: Usuario): Promise<void> {
         if (e.tipo === "delta") {
           parcial += String(e.texto ?? "");
           espelhar(parcial);
+        } else if (e.tipo === "narracao_viva") {
+          /* v3.73.2: o texto da resposta ANDA na linha viva da trilha (redesign v3.72).
+             O espelho é o retrato do que a pessoa está LENDO agora — sem ele, quem
+             reanexa no meio de uma rodada longa não vê parcial nenhum. `mover_resposta`
+             reescreve os mesmos caracteres em `parcial` (replace, não append). */
+          parcial += String(e.texto ?? "");
+          espelhar(parcial);
         } else if (e.tipo === "mover_resposta") {
           /* v3.72: o texto da resposta nasce na TRILHA (narracao_viva) e so entra na bolha
-             quando a rodada fecha sem ferramenta. O espelho espia a BOLHA, entao ele so ve
-             esse texto agora — quem reanexar nao replaya narração como resposta. */
-          parcial += String(e.texto ?? "");
+             quando a rodada fecha sem ferramenta. Como a linha viva ja foi espelhada
+             pedaço a pedaço acima, aqui o espelho REPOSIÇÃO (não append): os mesmos
+             caracteres, agora escritos como resposta da bolha — sem duplicar. */
+          parcial = String(e.texto ?? "");
           espelhar(parcial);
         } else if (e.tipo === "descartar" || e.tipo === "fala") {
           parcial = "";

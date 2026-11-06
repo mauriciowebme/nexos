@@ -111,10 +111,15 @@ export type Plano = {
   compactou: boolean;
   /** gatilho efetivo em tokens (menor entre threshold_k e a fatia configurada da janela) */
   gatilho: number;
-  /** tokens estimados do payload final */
+  /** tokens estimados do PEDIDO final — INCLUDE as ferramentas (v3.73/T054): é o número
+   *  comparável com o `prompt_tokens` que o provedor devolve e com a barra da tela. */
   tokens: number;
-  /** para quanto ficou o orçamento disponível */
+  /** TETO do pedido = janela efetiva − reserva. As ferramentas entram em `tokens`, então não
+   *  são descontadas aqui (descontar nos dois lados = contar duas vezes). */
   disponivel: number;
+  /** quanto do total são as FERRAMENTAS (terceira fatia do medidor de contexto). O espaço que
+   *  resta para a conversa já as desconta: coube ⟺ conversa ≤ disponivel − ferramentas. */
+  ferramentas: number;
   /** mensagens antigas que entraram no resumo (parte A) */
   resumidas: number;
   /** pares pedido->conclusão preservados íntegros (parte B) */
@@ -306,7 +311,11 @@ export function gatilhoEmTokens(opcoes: Opcoes, janela: number): number {
 /** Monta o payload: abaixo do gatilho vai inteiro; no gatilho (ou sem caber), cascata C/B/A. */
 export function montarPayload(p: PedidoDeOrcamento): Plano {
   const op: Opcoes = { ...OPCOES_PADRAO, ...(p.opcoes ?? {}) };
-  const disponivel = Math.max(1, Math.floor(p.janela - p.reserva - p.toolsTokens));
+  const ferr = Math.max(0, Math.floor(p.toolsTokens || 0));
+  /** teto do PEDIDO (janela − reserva) e o espaço que sobra para a CONVERSA depois que as
+   *  ferramentas ocupam a parte delas (v3.73/T054 — os dois números deixam de se sobrepor) */
+  const teto = Math.max(1, Math.floor(p.janela - p.reserva));
+  const paraConversa = Math.max(1, teto - ferr);
   const system: MsgChat[] = p.system.trim() ? [{ role: "system", content: p.system }] : [];
   const atual: MsgChat[] = [{ role: "user", content: p.pergunta }];
   const gatilho = gatilhoEmTokens(op, p.janela);
@@ -315,13 +324,14 @@ export function montarPayload(p: PedidoDeOrcamento): Plano {
   const intacto = custoDoPayload([...system, ...historico, ...atual]);
 
   /* ---- abaixo do gatilho E cabendo: nada é tocado (igual ao mini-compress) ---- */
-  if ((gatilho <= 0 || intacto < gatilho) && intacto <= disponivel) {
+  if ((gatilho <= 0 || intacto < gatilho) && intacto <= paraConversa) {
     return {
       mensagens: [...system, ...historico, ...atual],
       compactou: false,
       gatilho,
-      tokens: intacto,
-      disponivel,
+      tokens: intacto + ferr,
+      disponivel: teto,
+      ferramentas: ferr,
       resumidas: 0,
       pares: 0,
       cortadas: 0,
@@ -373,7 +383,7 @@ export function montarPayload(p: PedidoDeOrcamento): Plano {
   let descartadas = 0;
 
   /* ---- EMERGÊNCIA 1: ainda não coube -> aperta a cauda POR DENTRO ---- */
-  if (custoDoPayload(saida) > disponivel) {
+  if (custoDoPayload(saida) > paraConversa) {
     const tetoPorMsg = Math.max(2000, Math.floor(op.tailCharsCap / Math.max(cauda.length, 1)));
     const apertada = cauda.map((m) => truncarPorDentro(m, tetoPorMsg));
     cortadas = apertada.filter((m, i) => txt(m).length < txt(cauda[i]).length).length;
@@ -382,21 +392,21 @@ export function montarPayload(p: PedidoDeOrcamento): Plano {
   }
 
   /* ---- EMERGÊNCIA 2: descarta do mais antigo da cauda (até esvaziar) ---- */
-  while (custoDoPayload(saida) > disponivel && cauda.length > 0) {
+  while (custoDoPayload(saida) > paraConversa && cauda.length > 0) {
     cauda.shift();
     descartadas++;
     saida = montar(cauda);
   }
 
   /* ---- EMERGÊNCIA 3: ainda não coube -> encolhe B e A (nunca o system nem a pergunta) ---- */
-  while (custoDoPayload(saida) > disponivel && pares.length > 1) {
+  while (custoDoPayload(saida) > paraConversa && pares.length > 1) {
     pares = pares.slice(1); /* par mais antigo volta a ser texto do resumo */
     faixaA = meio.slice(0, Math.max(0, faixaA.length + 2));
     blocoB = construirPares(pares, op.pairsBlockCap);
     blocoA = fazerBlocoA(faixaA, op.summaryCharsCap);
     saida = montar(cauda);
   }
-  while (custoDoPayload(saida) > disponivel && blocoA) {
+  while (custoDoPayload(saida) > paraConversa && blocoA) {
     const corpo = txt(blocoA);
     if (corpo.length <= 600) break;
     blocoA = { role: "user", content: corpo.slice(0, Math.floor(corpo.length * 0.6)) + "\n…[resumo truncado por orçamento]\n\n" + SUMMARY_FOOTER };
@@ -404,7 +414,7 @@ export function montarPayload(p: PedidoDeOrcamento): Plano {
   }
 
   /* ---- EMERGÊNCIA 4: nem os blocos cabem -> só system + pergunta (nunca estoura) ---- */
-  if (custoDoPayload(saida) > disponivel) {
+  if (custoDoPayload(saida) > paraConversa) {
     const antes = custoDoPayload(saida);
     blocoA = null;
     blocoB = null;
@@ -412,18 +422,23 @@ export function montarPayload(p: PedidoDeOrcamento): Plano {
     if (custoDoPayload(saida) < antes) cortadas++;
   }
 
-  const tokens = custoDoPayload(saida);
+  /* a conversa é o que sobra do pedido depois de tirar o system: assim as três fatias do
+     medidor (prompt / conversa / ferramentas) somam EXATAMENTE o total mostrado (T054) */
+  const conversa = custoDoPayload(saida.filter((m) => m.role !== "system"));
+  const prompt = custoDoPayload(saida.filter((m) => m.role === "system"));
+  const tokens = prompt + conversa + ferr;
   return {
     mensagens: saida,
     compactou: true,
     gatilho,
     tokens,
-    disponivel,
+    disponivel: teto,
+    ferramentas: ferr,
     resumidas: faixaA.length,
     pares: pares.length,
     cortadas,
     descartadas,
-    coube: tokens <= disponivel,
+    coube: tokens <= teto,
   };
 }
 
@@ -431,16 +446,30 @@ export function montarPayload(p: PedidoDeOrcamento): Plano {
 export function apertarRodada(
   mensagens: MsgChat[],
   orc: { janela: number; reserva: number; toolsTokens: number; verbatim: number },
-): { mensagens: MsgChat[]; cortadas: number; descartadas: number; tokens: number; disponivel: number } {
-  const disponivel = Math.max(1, Math.floor(orc.janela - orc.reserva - orc.toolsTokens));
+): {
+  mensagens: MsgChat[];
+  cortadas: number;
+  descartadas: number;
+  /** total do PEDIDO (conversa + ferramentas) — mesma régua do `tokens` do plano (v3.73) */
+  tokens: number;
+  /** teto do pedido (janela − reserva) */
+  disponivel: number;
+  ferramentas: number;
+} {
+  const ferr = Math.max(0, Math.floor(orc.toolsTokens || 0));
+  const teto = Math.max(1, Math.floor(orc.janela - orc.reserva));
+  const paraConversa = Math.max(1, teto - ferr);
   const copia = mensagens.map((m) => ({ ...m }));
   let cortadas = 0;
   let descartadas = 0;
 
-  const custo = () => custoDoPayload(copia) + Math.max(0, orc.toolsTokens);
+  /* v3.73: as ferramentas eram somadas AQUI e descontadas do `disponivel` — contadas duas
+     vezes, o loop apertava mais do que precisava. Agora a conversa briga pelo espaço que
+     sobra (teto − ferramentas), exatamente como no montarPayload. */
+  const custo = () => custoDoPayload(copia);
 
   /* 1) conteúdos de ferramenta: os mais antigos viram as primeiras vítimas (400 chars) */
-  for (let i = 0; i < copia.length - 1 && custo() > disponivel; i++) {
+  for (let i = 0; i < copia.length - 1 && custo() > paraConversa; i++) {
     if (copia[i].role === "tool" && txt(copia[i]).length > 400) {
       copia[i].content = `${txt(copia[i]).slice(0, 400)}\n…(cortado por orçamento de contexto)`;
       cortadas++;
@@ -448,11 +477,20 @@ export function apertarRodada(
   }
   /* 2) mensagens antigas (mantém system na frente + cauda verbatim + última) */
   const cauda = Math.max(1, Math.min(orc.verbatim, copia.length - 2));
-  while (custo() > disponivel && copia.length > 2 + cauda) {
+  while (custo() > paraConversa && copia.length > 2 + cauda) {
     const idx = copia.findIndex((m, i) => i > 0 && m.role !== "system" && copia.length - 1 - i >= cauda);
     if (idx < 0) break;
     copia.splice(idx, 1);
     descartadas++;
   }
-  return { mensagens: copia, cortadas, descartadas, tokens: custo(), disponivel };
+  const conversa = custoDoPayload(copia.filter((m) => m.role !== "system"));
+  const prompt = custoDoPayload(copia.filter((m) => m.role === "system"));
+  return {
+    mensagens: copia,
+    cortadas,
+    descartadas,
+    tokens: prompt + conversa + ferr,
+    disponivel: teto,
+    ferramentas: ferr,
+  };
 }
