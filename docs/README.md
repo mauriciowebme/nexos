@@ -19,7 +19,7 @@ O que vai onde (lugares canônicos da casa — padrão `organizacao-documentacao
 
 | Arquivo | Assunto | Linhas |
 |---|---|---|
-| `proximos-passos.md` | **só o aberto**: T054 (contexto atual no painel) + T055 (tok/s) + ideias não numeradas — T052/T053 retiradas por enquanto, a pedido do dono | 82 |
+| `proximos-passos.md` | **só o aberto**: fila T### zerada na 3.73.0 (T054/T055 entregues; T052/T053 retiradas por enquanto) + ideias não numeradas | ~50 |
 | `testes.md` | contrato da suíte do nexos (ponteiro para `suite-de-testes`) | 131 |
 | `mcp.md` | os três papéis do nexos (agente, central de memória, servidor MCP) e o protocolo de `POST /mcp` | 181 |
 | `analises/2026-11-04-referencia-deepseek-harness.md` | referência da casa para medidor de contexto, velocidade de escrita e compactação, lida no código do DeepSeek Harness | 112 |
