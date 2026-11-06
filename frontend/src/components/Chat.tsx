@@ -25,8 +25,110 @@ import {
   type FerramentaLinha,
   type Linha,
   type SegmentoRastro,
-  type Transportar, tarefaViva, falarNoTurno, type AnexoEnviado } from "../lib/conversa";
+  type Transportar, tarefaViva, falarNoTurno, type AnexoEnviado, type RetratoContexto, velocidadeDoCusto } from "../lib/conversa";
 import type { ChatHistorico, Compactacao, ProviderResp, Provedor } from "../types";
+
+/** v3.73: número no jeito brasileiro (18.400), porque o do medidor é lido por gente. */
+const numBR = (n: number): string => new Intl.NumberFormat("pt-BR").format(Math.round(n));
+
+/** v3.73 (T055): segundo com decimal brasileiro (1,8 s) — "2 s" escondia o que importava. */
+const segBR = (ms: number): string => {
+  const s = ms / 1000;
+  return s < 10 ? String(s.toFixed(1).replace(".", ",")) : String(Math.round(s));
+};
+
+/** v3.73.1 (T055): a VELOCIDADE mora na linha de custo da bolha, não só no cabeçalho do rastro.
+ *  Motivo medido: resposta sem ferramenta não tem trilha (`rastro: []` no banco), o bloco do
+ *  rastro não é renderizado e o número nunca era lido. O `custo` viaja na mensagem, então o
+ *  selo também aparece em conversa reaberta. */
+const velocidadeTexto = (custo: unknown): string => {
+  const v = velocidadeDoCusto(custo);
+  if (!v) return "";
+  return ` · ${segBR(v.ateLetraMs)}s até a 1ª letra · ${String(v.tokS).replace(".", ",")} tok/s`;
+};
+const velocidadeTitulo = (custo: unknown): string => {
+  const v = velocidadeDoCusto(custo);
+  if (!v) return "";
+  return (
+    ` · escrita: ${v.tokEscrita} tok em ${segBR(v.escritaMs)}s` +
+    " (a janela de escrita não inclui espera de ferramenta; contagem chars ÷ 4)"
+  );
+};
+
+/* ------------------------------------------------------------------ medidor de contexto (v3.73 / T054) */
+
+/** A barra do piso: quanto do teto o ÚLTIMO envio usou (anel na porcentagem) e, ao clicar,
+ *  para onde foi o contexto — prompt de sistema, conversa e ferramentas, na mesma régua que
+ *  corta o payload. Só aparece com os DOIS números (usado e teto): sem um deles, nada de meia
+ *  verdade na tela. O `~` e a origem de cada número são consequência da régua, não decoração. */
+function MedidorContexto({ ctx }: { ctx: RetratoContexto }) {
+  const [aberto, setAberto] = useState(false);
+  const frac = Math.min(1, ctx.tokens / Math.max(1, ctx.disponivel));
+  const circ = 2 * Math.PI * 6.5;
+  const d = ctx.detalhe;
+  const soma = Math.max(1, d.prompt + d.conversa + d.ferramentas);
+  const aprox = ctx.estimado ? "~" : "";
+  const regua = ctx.origem_contagem === "provedor" ? "contagem do provedor" : "estimativa (chars ÷ 4)";
+  const teto =
+    ctx.origem_janela === "configurada"
+      ? "janela configurada"
+      : ctx.origem_janela === "detectada"
+        ? "janela detectada"
+        : ctx.origem_janela || "janela";
+  return (
+    <div className={"chat-contexto" + (frac >= 0.9 ? " chat-contexto-cheio" : "")} data-testid="contextoMedidor">
+      <button
+        type="button"
+        className="chat-contexto-linha"
+        onClick={() => setAberto((v) => !v)}
+        aria-expanded={aberto}
+        data-testid="contextoLinha"
+        title={`${numBR(ctx.tokens)} de ${numBR(ctx.disponivel)} tokens · janela ${numBR(ctx.janela)} · reserva de saída ${numBR(ctx.reserva)} · ${regua}`}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.5" className="fill-none stroke-borda" strokeWidth={2.5} />
+          <circle
+            cx="8"
+            cy="8"
+            r="6.5"
+            className={"fill-none " + (frac >= 0.9 ? "stroke-vermelho" : "stroke-azul")}
+            strokeWidth={2.5}
+            strokeLinecap="round"
+            strokeDasharray={`${(frac * circ).toFixed(2)} ${circ.toFixed(2)}`}
+            transform="rotate(-90 8 8)"
+          />
+        </svg>
+        <span className="chat-contexto-num" data-testid="contextoNumeros">
+          {aprox}
+          {numBR(ctx.tokens)} <span className="chat-contexto-teto">/ {aprox}{numBR(ctx.disponivel)} tokens</span>
+        </span>
+        <span className="chat-contexto-pct" data-testid="contextoPct">{Math.round(frac * 100)}%</span>
+        <span className="chat-contexto-fonte" data-testid="contextoOrigem">{regua} · teto {teto}</span>
+        <span className="ml-auto">{aberto ? "▴" : "▾"}</span>
+      </button>
+      {aberto && (
+        <div className="chat-contexto-detalhe" data-testid="contextoDetalhe">
+          <div className="chat-contexto-barra" role="img" aria-label={`prompt ${numBR(d.prompt)}, conversa ${numBR(d.conversa)}, ferramentas ${numBR(d.ferramentas)} tokens`}>
+            <i className="chat-contexto-fatia chat-contexto-prompt" style={{ width: `${(d.prompt / soma) * 100}%` }} />
+            <i className="chat-contexto-fatia chat-contexto-conversa" style={{ width: `${(d.conversa / soma) * 100}%` }} />
+            <i className="chat-contexto-fatia chat-contexto-ferramentas" style={{ width: `${(d.ferramentas / soma) * 100}%` }} />
+          </div>
+          <ul className="chat-contexto-lista">
+            <li><i className="chat-contexto-ponto chat-contexto-prompt" />prompt de sistema — <b>{numBR(d.prompt)}</b> tok</li>
+            <li><i className="chat-contexto-ponto chat-contexto-conversa" />conversa (histórico + pergunta) — <b>{numBR(d.conversa)}</b> tok</li>
+            <li><i className="chat-contexto-ponto chat-contexto-ferramentas" />ferramentas — <b>{numBR(d.ferramentas)}</b> tok</li>
+          </ul>
+          <p className="chat-contexto-nota">
+            {ctx.origem_contagem === "provedor"
+              ? "o total é a contagem real do provedor; as fatias são a nossa régua ajustada proporcionalmente (o provedor não manda a partição)"
+              : "número estimado com a mesma régua que corta o payload (chars ÷ 4) — o provedor não devolveu contagem nesta chamada"}
+            {" · "}o teto já desconta a reserva de {numBR(ctx.reserva)} tok para a resposta
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** linha de status da tarefa viva (GET /chat/tarefas e GET /chat/tarefa/:id) */
 type TarefaStatus = { id: string; pergunta?: string; status: string; parcial: string; ferramentas?: unknown[]; telas?: unknown[]; aviso?: string | null };
@@ -203,6 +305,7 @@ function Rastro({
   onToggle,
   ms,
   inicio,
+  custo,
 }: {
   segmentos: SegmentoRastro[];
   vivo: boolean;
@@ -214,6 +317,8 @@ function Rastro({
   ms?: number;
   /** v3.34: quando o turno começou (relógio andando enquanto ele vive) */
   inicio?: number;
+  /** v3.73 (T055): o que o turno mediu da ESCRITA (custo do `fim`) — sem medição, nada aparece */
+  custo?: Record<string, unknown> | null;
 }) {
   const corpo = useRef<HTMLDivElement | null>(null);
   const colado = useRef(true);
@@ -263,6 +368,11 @@ function Rastro({
       ? Math.max(1, Math.round((Date.now() - inicio) / 1000))
       : Math.max(1, Math.round(somaMs / 1000));
   const posTools = trilha.map((s, i) => (s.tipo === "ferramenta" ? i : -1)).filter((i) => i >= 0);
+  /* v3.73 (T055): a escrita medida pelo servidor (só existe no streaming). Sem medição, a
+     tela não mostra número nenhum — é melhor vazio do que número inventado. */
+  const ateLetra = Math.max(0, Number(custo?.ms_ate_primeira_letra ?? 0));
+  const escrita = Math.max(0, Number(custo?.ms_escrita ?? 0));
+  const tokS = Number(custo?.tok_s ?? 0);
 
   return (
     <div className="rastro" data-testid="rastroBloco">
@@ -281,9 +391,22 @@ function Rastro({
               : "ver o rastro do turno"
         }
       >
-        <span>
+        <span
+          data-testid="rastroVelocidade"
+          title={
+            ateLetra > 0 && escrita > 0
+              ? "tempo do turno inteiro · tempo até a primeira letra escrita · velocidade de escrita " +
+                "(a janela de escrita não inclui espera de ferramenta)"
+              : "tempo do turno inteiro"
+          }
+        >
           <b>Rastro do turno</b>
           {` · ${trilha.length} etapa${trilha.length === 1 ? "" : "s"} · ${total}s`}
+          {/* v3.73 (T055): a contagem de etapas não dizia o que importava — travou antes de
+              começar ou escreveu devagar? Só aparece no turno MEDIDO (streaming). */}
+          {ateLetra > 0 && escrita > 0 && tokS > 0
+            ? ` · ${segBR(ateLetra)}s até a 1ª letra · ${tokS} tok/s`
+            : ""}
         </span>
         <span className="ml-auto">{aberto ? "▴" : "▾"}</span>
       </button>
@@ -1355,6 +1478,7 @@ export function Chat({
                       detalhes={m.ferramentas}
                       ms={m.ms}
                       inicio={m.inicio}
+                      custo={m.custo}
                       aberto={rastroAberto(Boolean(m.escrevendo), m.texto, produzindo(m))}
                       travado={emProcesso(Boolean(m.escrevendo), m.texto, produzindo(m))}
                       onToggle={alternarRastro}
@@ -1526,8 +1650,17 @@ export function Chat({
                   )}
                   {m.when && <span className="chat-hora">{fmtHora(m.when)}</span>}
                   {m.custo && Number(m.custo.tok_out ?? 0) > 0 && (
-                    <span className="chat-hora" title={(m.custo.tok_in ? `${m.custo.tok_in} tok de entrada · ` : "") + "tokens da resposta"}>
+                    <span
+                      className="chat-hora"
+                      data-testid="custoTurno"
+                      title={
+                        (m.custo.tok_in ? `${m.custo.tok_in} tok de entrada · ` : "") +
+                        "tokens da resposta" +
+                        velocidadeTitulo(m.custo)
+                      }
+                    >
                       {Number(m.custo.tok_out)} tok
+                      <span data-testid="custoVelocidade">{velocidadeTexto(m.custo)}</span>
                     </span>
                   )}
                   {m.provedor && (
@@ -1767,6 +1900,9 @@ export function Chat({
             </button>
             </div>
           </div>
+          {/* v3.73 (T054): medidor de contexto DO ÚLTIMO ENVIO, colado abaixo do campo — o dono
+              não precisa abrir Configurações para saber quanto da janela aquele envio usou. */}
+          {snap.contexto && <MedidorContexto ctx={snap.contexto} />}
         </div>
       </div>
     </section>

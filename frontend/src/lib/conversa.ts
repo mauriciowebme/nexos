@@ -125,6 +125,60 @@ export type AnexoImagem = { mime: string; base64: string; nome?: string };
 /** v3.46: arquivo grande que o navegador subiu em blocos — fica no servidor, só o id viaja */
 export type AnexoEnviado = { id: string; nome: string; bytes: number };
 
+/** v3.73 (T054): para onde foi o contexto do ÚLTIMO envio. As três fatias somam o total —
+ *  quando o provedor conta de verdade, o total é dele e as fatias são proporcionais (a tela
+ *  declara isso). */
+export type DetalheContexto = { prompt: number; conversa: number; ferramentas: number };
+export type RetratoContexto = {
+  tokens: number;
+  disponivel: number;
+  detalhe: DetalheContexto;
+  origem_contagem: "estimativa" | "provedor";
+  estimado: boolean;
+  janela: number;
+  reserva: number;
+  origem_janela: string;
+};
+
+/** v3.73 (T054): o retrato viaja no `custo.ctx` do `fim` — e volta com o histórico, porque é
+ *  o mesmo JSONB gravado na mensagem. Só mostramos o medidor com os DOIS números (usado e teto). */
+export function retratoDoCusto(custo: unknown): RetratoContexto | null {
+  const c = (custo as Record<string, unknown> | null | undefined)?.ctx as Record<string, unknown> | undefined;
+  if (!c) return null;
+  const tokens = Number(c.tokens ?? 0);
+  const disponivel = Number(c.disponivel ?? 0);
+  if (!(tokens > 0) || !(disponivel > 0)) return null;
+  const d = (c.detalhe ?? {}) as Record<string, unknown>;
+  return {
+    tokens,
+    disponivel,
+    detalhe: {
+      prompt: Number(d.prompt ?? 0),
+      conversa: Number(d.conversa ?? 0),
+      ferramentas: Number(d.ferramentas ?? 0),
+    },
+    origem_contagem: c.origem_contagem === "provedor" ? "provedor" : "estimativa",
+    estimado: c.estimado !== false,
+    janela: Number(c.janela ?? 0),
+    reserva: Number(c.reserva ?? 0),
+    origem_janela: String(c.origem_janela ?? ""),
+  };
+}
+
+export type MedicaoEscrita = { ateLetraMs: number; escritaMs: number; tokEscrita: number; tokS: number };
+
+/** v3.73.1 (T055): o que o turno MEDEU de escrita (1ª letra, janela de escrita, tok/s). Mora no
+ *  mesmo `custo` gravado na mensagem, então sobrevive a recarregar a conversa. Devolve null
+ *  quando não houve medição — a tela não mostra número inventado. */
+export function velocidadeDoCusto(custo: unknown): MedicaoEscrita | null {
+  const c = (custo ?? {}) as Record<string, unknown>;
+  const escritaMs = Number(c.ms_escrita ?? 0);
+  const tokS = Number(c.tok_s ?? 0);
+  const tokEscrita = Number(c.tok_escrita ?? 0);
+  if (!(escritaMs > 0) || !(tokS > 0) || !(tokEscrita > 0)) return null;
+  return { ateLetraMs: Math.max(0, Number(c.ms_ate_primeira_letra ?? 0)), escritaMs, tokEscrita, tokS };
+}
+
 export type Estado = {
   msgs: Linha[];
   fila: { id: string; texto: string; imagens?: AnexoImagem[]; arquivos?: AnexoEnviado[] }[];
@@ -137,6 +191,9 @@ export type Estado = {
   vivo: string;
   /** desde quando esta tarefa corre, em epoch ms (0 = parada) — a tela mostra o tempo certo ao voltar */
   inicio: number;
+  /** v3.73 (T054): retrato do contexto do ÚLTIMO envio desta conversa (null = nunca enviou,
+   *  ou o provedor não contou e o histórico não trouxe o número: sem os dois números, sem barra) */
+  contexto: RetratoContexto | null;
 };
 
 type Conversa = Estado & { ouvintes: Set<() => void> };
@@ -252,7 +309,7 @@ const proximoId = () => `c${Date.now().toString(36)}-${++seq}`;
 const conversas = new Map<string, Conversa>();
 
 function nova(): Conversa {
-  return { msgs: [], fila: [], rodando: false, tarefaId: "", parando: false, vivo: "", inicio: 0, ouvintes: new Set() };
+  return { msgs: [], fila: [], rodando: false, tarefaId: "", parando: false, vivo: "", inicio: 0, contexto: null, ouvintes: new Set() };
 }
 
 /* v3.19: provedor/modelo escolhidos POR CONVERSA — a tela lembra e todo reenvio
@@ -331,7 +388,7 @@ function notifica(chave: string): void {
 /** fotografia imutável do estado (o que o Chat renderiza) */
 export function estado(chave: string): Estado {
   const c = pega(chave);
-  return { msgs: c.msgs.slice(), fila: c.fila.slice(), rodando: c.rodando, tarefaId: c.tarefaId, parando: c.parando, vivo: c.vivo, inicio: c.inicio };
+  return { msgs: c.msgs.slice(), fila: c.fila.slice(), rodando: c.rodando, tarefaId: c.tarefaId, parando: c.parando, vivo: c.vivo, inicio: c.inicio, contexto: c.contexto };
 }
 
 /** dá para assinar mesmo com a tela fechada: o trabalho continua e a tela volta quando quiser */
@@ -346,6 +403,15 @@ export function semear(chave: string, msgs: Linha[]): void {
   const c = pega(chave);
   const vivo = c.msgs.filter((m) => m.escrevendo || m.naFila);
   c.msgs = [...msgs, ...vivo];
+  /* v3.73 (T054): reabrir a conversa não zera o medidor — o retrato do último envio está no
+     `custo.ctx` gravado na própria mensagem. Ache a mais nova com retrato e mostra aquele. */
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const r = retratoDoCusto(msgs[i].custo);
+    if (r) {
+      c.contexto = r;
+      break;
+    }
+  }
   notifica(chave);
 }
 
@@ -608,6 +674,8 @@ export async function reativar(
       bolha.when = new Date().toISOString();
       bolha.aviso = (r.aviso as string) ?? null;
       bolha.compacto = (r.compacto as string) ?? undefined;
+      /* v3.73 (T054): o retrato do contexto deste envio alimenta a barra do compositor */
+      c.contexto = retratoDoCusto(r.custo) ?? c.contexto;
       bolha.escrevendo = false;
       bolha.falha = Boolean(erro);
     }
@@ -767,6 +835,8 @@ async function bombeia(chave: string, memoria: string, tenant: string | undefine
       bolha.aviso = (r.aviso as string) ?? null;
       /* quem desenha o aviso da compactação é a tela; o transporte entrega a linha pronta */
       bolha.compacto = (r.compacto as string) ?? undefined;
+      /* v3.73 (T054): o retrato do contexto deste envio alimenta a barra do compositor */
+      c.contexto = retratoDoCusto(r.custo) ?? c.contexto;
       bolha.escrevendo = false;
       bolha.falha = Boolean(erro);
     }
