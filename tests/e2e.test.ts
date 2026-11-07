@@ -4920,6 +4920,164 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.fechar("v3.71 settings nos lugares certos");
   });
 
+  await bloco(t, "v3.74 guarda do laço: chamada repetida e saída que vira arquivo", async () => {
+    const f = fiscal();
+    const CONTAINER = process.env.CONTAINER ?? "";
+    const DB = process.env.DBCONTAINER ?? "";
+    if (!CONTAINER || !DB) {
+      f.check("v3.74 precisa do container e do banco (provedor falso e linha do provedor)", true, "sem CONTAINER/DBCONTAINER: bloco não executável");
+      f.fechar("v3.74 guarda do laço (parcial)");
+      return;
+    }
+    const psql = (sql: string) =>
+      execFileSync("docker", ["exec", DB, "sh", "-c", `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "${sql}"`], { encoding: "utf8" }).trim();
+    const noContainer = (sh: string) =>
+      execFileSync("docker", ["exec", CONTAINER, "sh", "-c", sh], { encoding: "utf8" }).trim();
+
+    /* Fake ESTADO-LESS (regra 21 da canônica): decide pela ÚLTIMA pergunta e por quantos
+       resultados de ferramenta já estão no pedido. Nenhum toque de vida gasta rodada.
+       Cada pedido é anexado a /tmp/v374-payload.jsonl — é dali que se lê o que o modelo
+       REALMENTE recebeu (regra 34), não do que a resposta diz. */
+    const codFake = [
+      "const http=require('http'),fs=require('fs');",
+      "const LOG='/tmp/v374-payload.jsonl';",
+      "const s=http.createServer((req,res)=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{",
+      "let j={};try{j=JSON.parse(b||'{}');}catch(e){}",
+      "fs.appendFileSync(LOG,b+'\\n');",
+      "const m=j.messages||[];",
+      "let q='';for(let i=m.length-1;i>=0;i--){if(m[i].role==='user'){q=String(m[i].content||'');break;}}",
+      "const n=m.filter(x=>x.role==='tool').length;",
+      "const tc=(id,nome,args)=>({id,type:'function',function:{name:nome,arguments:JSON.stringify(args)}});",
+      "let cham=null;",
+      "if(q.indexOf('DESPEJO')>=0){if(n===0)cham=[tc('d1','rodar_python',{codigo:'for i in range(1,201):\\n    print(f\"LINHA-{i:04d} \" + (chr(88)*40))\\nprint(\"ZZZ-FIM-DA-SAIDA\")'})];}",
+      "else if(q.indexOf('REPETE')>=0){if(n<3)cham=[tc('r'+n,'list_gavetas',{})];}",
+      "else if(q.indexOf('MUDA')>=0){if(n===0)cham=[tc('m1','search',{query:'alfa v374'})];else if(n===1)cham=[tc('m2','search',{query:'bravo v374'})];}",
+      "const fim=(txt)=>({choices:[{message:{role:'assistant',content:txt},finish_reason:'stop'}]});",
+      "const corpo=cham?{choices:[{message:{role:'assistant',content:null,tool_calls:cham},finish_reason:'tool_calls'}]}:fim('pronto — resposta final do fake v374');",
+      "if(j.stream){res.setHeader('content-type','text/event-stream');",
+      "if(cham){res.write('data: '+JSON.stringify({choices:[{delta:{role:'assistant',tool_calls:cham}}]})+'\\n\\n');}",
+      "else{res.write('data: '+JSON.stringify({choices:[{delta:{content:'pronto — resposta final do fake v374'}}]})+'\\n\\n');}",
+      "res.write('data: [DONE]\\n\\n');return res.end();}",
+      "res.setHeader('content-type','application/json');res.end(JSON.stringify(corpo));",
+      "});});s.listen(9936,'127.0.0.1');setTimeout(()=>process.exit(0),300000);",
+    ].join("");
+    /* porta PRÓPRIA (9936): outros blocos deixam falso em 9916; o nosso morreria em
+       EADDRINUSE silencioso (o `docker exec -d` não acusa) e o ANTIGO responderia */
+    try {
+      execFileSync("docker", ["exec", String(CONTAINER), "sh", "-c", pkill(9936)], { stdio: "ignore" });
+    } catch {}
+    noContainer("rm -f /tmp/v374-payload.jsonl");
+    execFileSync("docker", ["exec", "-d", CONTAINER, "node", "-e", codFake]);
+    await dormir(1200);
+
+    const linha = `('*','suite-v374','openai','http://127.0.0.1:9936/v1','','v374fake',0.2,'',true,8,true,false,true,32768,0,0,2048)`;
+    psql(`DELETE FROM provedores WHERE nome='suite-v374'`);
+    psql(`INSERT INTO provedores (escopo,nome,tipo,base_url,chave,modelo,temperatura,system_prompt,mcp_interno,max_rodadas,ativo,padrao,publico,contexto_tokens,memoria_turnos,verbatim_turnos,reserva_tokens) VALUES ${linha}`);
+
+    const payloads = (): any[] => {
+      try {
+        return noContainer("cat /tmp/v374-payload.jsonl").split("\n").filter(Boolean).map((s) => JSON.parse(s));
+      } catch {
+        return [];
+      }
+    };
+    const doTurno = async (pergunta: string, memoria: string, key: string) => {
+      const antes = payloads().length;
+      const r = await call("POST", "/chat", { key, corpo: { pergunta, memoria, provedor: "suite-v374" } });
+      return { r, pedidos: payloads().slice(antes) };
+    };
+
+    /* ================= T056: a MESMA chamada, com os MESMOS argumentos ================= */
+    console.log("-- v3.74 REPETE: list_gavetas idêntica 3x no mesmo turno");
+    let { r, pedidos } = await doTurno("REPETE suite v374", "suite-v374-repete", TESTKEY);
+    let d = r.json ?? {};
+    f.check("v3.74 /chat respondeu JSON (não HTML do SPA)", r.status === 200 && !!r.json, r.status + " " + r.texto.slice(0, 160));
+    /* se o falso não atendeu (porta ocupada), TODAS as contas abaixo falham confusas;
+       esta aqui grita a causa na primeira linha */
+    f.check("v3.74 o fake atendeu (payload gravado no container)", pedidos.length > 0, `payloads=${pedidos.length}`);
+    f.check("v3.74 a 3ª chamada IDÊNTICA não executou (só 2 no registro)", (d.ferramentas ?? []).length === 2, (d.ferramentas ?? []).map((x: any) => x.nome));
+    f.check("v3.74 as duas executadas são a mesma ferramenta", (d.ferramentas ?? []).every((x: any) => x.nome === "list_gavetas"), (d.ferramentas ?? []).map((x: any) => x.nome));
+    f.check("v3.74 o turno parou na 3ª rodada (não girou até o teto)", d.rodadas === 3, d.rodadas);
+    f.check("v3.74 a tela fica sabendo o motivo", /3ª vez|mesmos argumentos|encerrado/i.test(String(d.aviso ?? "")), d.aviso);
+    f.check("v3.74 a trilha ganhou a linha do guarda", (d.rastro ?? []).some((s: any) => s.tipo === "guarda" && /repetida pela 3ª vez/.test(String(s.texto ?? ""))), (d.rastro ?? []).map((s: any) => s.tipo).join(","));
+    f.check("v3.74 a resposta não ficou em branco", String(d.resposta ?? "").trim().length > 0, String(d.resposta ?? "").slice(0, 120));
+    /* o modelo recebeu o lembrete DENTRO do resultado da 2ª chamada. A 3ª nunca foi enviada
+       como executada: o guarda encerrou o turno ANTES de rodá-la, então o pedido que saiu
+       para o provedor nunca ficou manco (chamada sem resposta `tool` derruba provedor). */
+    const ultimoRep = pedidos[pedidos.length - 1]?.messages ?? [];
+    f.check("v3.74 o resultado da 2ª vez traz o lembrete ao modelo", ultimoRep.some((x: any) => x.role === "tool" && /\[guarda do laço\]/.test(String(x.content ?? ""))), ultimoRep.filter((x: any) => x.role === "tool").map((x: any) => String(x.content ?? "").slice(-90)));
+    const dangling = pedidos.map((p: any) => {
+      const ms = p.messages ?? [];
+      const cham = ms.flatMap((m: any) =>
+        m.role === "assistant" ? (m.tool_calls ?? []).map((c: any) => String(c.id ?? "")) : [],
+      );
+      const respondidas = new Set(ms.filter((m: any) => m.role === "tool").map((m: any) => String(m.tool_call_id ?? "")));
+      return cham.filter((id: string) => id && !respondidas.has(id)).length;
+    });
+    f.check("v3.74 nenhum payload saiu com chamada sem resposta (histórico manco)", dangling.every((n: number) => n === 0), dangling.join(","));
+    f.check("v3.74 a resposta do turno não é a marcação do guarda", !/\[não executada\]/.test(String(d.resposta ?? "")), String(d.resposta ?? "").slice(0, 120));
+
+    /* negativo: mesma ferramenta, argumentos DIFERENTES = o laço trabalha, ninguém intervém */
+    console.log("-- v3.74 MUDA: search com argumentos diferentes");
+    ({ r, pedidos } = await doTurno("MUDA suite v374", "suite-v374-muda", TESTKEY));
+    d = r.json ?? {};
+    f.check("v3.74 argumentos diferentes executam as duas (sem guarda)", (d.ferramentas ?? []).length === 2, (d.ferramentas ?? []).map((x: any) => [x.nome, x.args]));
+    f.check("v3.74 nenhuma linha de guarda na trilha do caso legítimo", !(d.rastro ?? []).some((s: any) => s.tipo === "guarda"), (d.rastro ?? []).map((s: any) => s.tipo).join(","));
+    f.check("v3.74 sem aviso de repetição no caso legítimo", !/mesmos argumentos/i.test(String(d.aviso ?? "")), d.aviso);
+
+    /* ================= T057: a saída grande vira ARQUIVO, não cauda jogada fora =================
+       `rodar_python` é do operador (v3.50), então a conta é a `op` e o arquivo nasce em
+       /app/dados/usuarios/op/scripts/saida/despejos/. */
+    console.log("-- v3.74 DESPEJO: saída de 9 mil caracteres vira arquivo na pasta da conta");
+    noContainer("rm -rf /app/dados/usuarios/op/scripts/saida/despejos");
+    ({ r, pedidos } = await doTurno("DESPEJO suite v374", "suite-v374-despejo", OPKEY));
+    d = r.json ?? {};
+    f.check("v3.74 /chat do despejo respondeu JSON", r.status === 200 && !!r.json, r.status + " " + r.texto.slice(0, 160));
+    const dj = (d.despejos ?? [])[0] ?? {};
+    f.check("v3.74 o turno declara 1 despejo da ferramenta certa", (d.despejos ?? []).length === 1 && dj.ferramenta === "rodar_python", d.despejos);
+    f.check("v3.74 o arquivo tem o corpo inteiro (>9 mil bytes)", dj.bytes > 9000, dj.bytes);
+    f.check("v3.74 compactação conta o despejo", d.compactacao?.despejadas === 1, d.compactacao?.despejadas);
+    f.check("v3.74 o arquivo virou anexo na conversa", (d.anexos ?? []).some((a: any) => /^rodar_python-\d{8}-\d{6}-[0-9a-f]{6}\.txt$/.test(String(a.nome ?? ""))), (d.anexos ?? []).map((a: any) => a.nome));
+    f.check("v3.74 a trilha mostra a saída aparada", (d.rastro ?? []).some((s: any) => s.tipo === "guarda" && /saída aparada/.test(String(s.texto ?? ""))), (d.rastro ?? []).map((s: any) => s.tipo).join(","));
+
+    /* (a) o arquivo no disco tem a LINHA DO MEIO, que era o que se perdia */
+    let disco = "";
+    try {
+      disco = noContainer(`cat /app/dados/usuarios/op/scripts/saida/${dj.relativo}`);
+    } catch (e) {
+      disco = "";
+    }
+    f.check("v3.74 o arquivo gravado existe na pasta da conta", disco.length > 9000, `${dj.relativo} -> ${disco.length} chars`);
+    f.check("v3.74 o arquivo guarda o meio (LINHA-0100) e o fim", disco.includes("LINHA-0100") && disco.includes("ZZZ-FIM-DA-SAIDA"), disco.slice(-120));
+
+    /* (b) o payload do modelo: começo + fim + caminho, sem o bloco inteiro */
+    const pay = JSON.stringify(pedidos[pedidos.length - 1]?.messages ?? []);
+    /* o JSON escapa as aspas de open("…"): a frase do guarda se confere no texto da mensagem */
+    const txtTool = (pedidos[pedidos.length - 1]?.messages ?? [])
+      .filter((m: any) => m.role === "tool")
+      .map((m: any) => String(m.content ?? ""))
+      .join("\n");
+    f.check("v3.74 o payload avisa que a saída foi aparada", pay.includes("[saída aparada]"), pay.slice(0, 200));
+    f.check("v3.74 o payload traz o COMEÇO e o FIM (a cauda não some mais)", pay.includes("COMEÇO (") && pay.includes("FIM (") && pay.includes("LINHA-0199") && pay.includes("ZZZ-FIM-DA-SAIDA"), pay.length);
+    f.check("v3.74 o payload NÃO carrega o despejo inteiro", !pay.includes("LINHA-0100") && pay.length < 40000, `${pay.length} chars do payload`);
+    f.check("v3.74 o payload diz o caminho e como reler o meio", pay.includes(String(dj.relativo ?? "@@")) && txtTool.includes('open("'), txtTool.match(/open\("[^"]+"\)/)?.[0] ?? "sem open()");
+
+    /* (c) o rastro sobrevive ao reabrir a conversa (gravação, não só emissão ao vivo) */
+    const lido = await call("GET", "/chat?memoria=suite-v374-despejo", { key: OPKEY });
+    const guardaNoHistorico = JSON.stringify(lido.json ?? {}).includes("saída aparada");
+    f.check("v3.74 a linha do guarda está gravada na conversa", lido.status === 200 && guardaNoHistorico, `${lido.status} ${lido.texto.slice(0, 120)}`);
+
+    /* limpeza: provedor, fake, conversas e despejos da conta */
+    psql(`DELETE FROM provedores WHERE nome='suite-v374'`);
+    noContainer("rm -f /tmp/v374-payload.jsonl");
+    execFileSync("docker", ["exec", String(CONTAINER), "sh", "-c", pkill(9936)], { stdio: "ignore" });
+    for (const [mem, key] of [["suite-v374-repete", TESTKEY], ["suite-v374-muda", TESTKEY], ["suite-v374-despejo", OPKEY]] as [string, string][]) {
+      await call("DELETE", `/chat?memoria=${mem}`, { key });
+    }
+    noContainer("rm -rf /app/dados/usuarios/op/scripts/saida/despejos");
+    f.fechar("v3.74 guarda do laço");
+  });
+
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {
     const f = fiscal();
     for (let i = 0; i < 10; i++) {
