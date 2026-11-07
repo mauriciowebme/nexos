@@ -35,6 +35,9 @@ export type EventoTransporte =
   | { tipo: "ferramenta"; servidor: string; nome: string; ok: boolean; ms: number }
   /** v3.43: a pessoa falou no MEIO do turno — entra na trilha, no ponto em que chegou */
   | { tipo: "steer"; texto: string }
+  /** v3.74 (T056/T057): o GUARDA DO LAÇO falou — chamada repetida detectada, ou saída de
+   *  ferramenta que saiu do payload e virou arquivo na pasta da conta */
+  | { tipo: "guarda"; texto: string }
   /** v3.23: tela pronta — o card com preview funcional entra na bolha na hora */
   | { tipo: "tela"; tela: Tela }
   /** v3.44: arquivo/print que a máquina mandou — aparece na hora (miniatura + baixar) */
@@ -64,7 +67,9 @@ export type SegmentoRastro =
   | { tipo: "narracao"; texto: string; vivo?: boolean; inicio?: number; em?: number }
   | { tipo: "ferramenta"; servidor: string; nome: string; ok: boolean; ms: number; vivo?: boolean; inicio?: number; em?: number }
   /** v3.43: a fala que a pessoa mandou NO MEIO do turno — mora na trilha, no ponto em que chegou */
-  | { tipo: "interrupcao"; texto: string; em?: number };
+  | { tipo: "interrupcao"; texto: string; em?: number }
+  /** v3.74 (T056/T057): o guarda do laço interveio (chamada repetida / saída virou arquivo) */
+  | { tipo: "guarda"; texto: string; em?: number };
 
 /** v3.44: arquivo que veio da máquina (print, imagem, log) e mora em `anexos` no servidor */
 export type AnexoArquivo = { id: string; nome: string; mime: string; bytes: number };
@@ -595,6 +600,14 @@ export async function reativar(
             acrescentar(bolha, { tipo: "narracao", texto: txt, em: Math.max(0, Date.now() - c.inicio) });
           }
         }
+      } else if (e.tipo === "guarda") {
+        /* v3.74 (T056/T057): o guarda do laço falou — entra na trilha no ponto em que
+           aconteceu (o dono vê o modelo repetir chamada / a saída virar arquivo) */
+        const txt = String(e.texto ?? "");
+        if (txt) {
+          fecharPensamento(bolha);
+          acrescentar(bolha, { tipo: "guarda", texto: txt, em: Math.max(0, Date.now() - c.inicio) });
+        }
       } else if (e.tipo === "steer") {
         /* v3.43: interrupção aparece DENTRO do rastro, no ponto em que chegou — não como
            balão solto depois da resposta (que era o pedido do dono) */
@@ -759,6 +772,13 @@ async function bombeia(chave: string, memoria: string, tenant: string | undefine
           if (!fecharNarracaoViva(bolha, txt, Math.max(0, Date.now() - c.inicio))) {
             acrescentar(bolha, { tipo: "narracao", texto: txt, em: Math.max(0, Date.now() - c.inicio) });
           }
+        }
+      } else if (e.tipo === "guarda") {
+        /* v3.74 (T056/T057): o guarda do laço falou — linha na trilha, no ponto em que foi */
+        const txt = String(e.texto ?? "");
+        if (txt) {
+          fecharPensamento(bolha);
+          acrescentar(bolha, { tipo: "guarda", texto: txt, em: Math.max(0, Date.now() - c.inicio) });
         }
       } else if (e.tipo === "descartar") {
         bruto = "";

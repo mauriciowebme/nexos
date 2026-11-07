@@ -654,6 +654,15 @@
   .rastro-ponto-amarelo {
     @apply mt-[6px] bg-amarelo;
   }
+  /* v3.74 (T056/T057): linha do GUARDA DO LAÇO — o servidor interveio no turno
+     (chamada repetida / saída aparada que virou arquivo). Neutra de propósito: não é fala
+     do dono (amarelo), não é ferramenta (azul), não é pensamento (roxo) — é a casa agindo. */
+  .rastro-guarda {
+    @apply rounded border border-bordaforte bg-sup3 px-1.5 py-0.5 text-txt2;
+  }
+  .rastro-ponto-neutra {
+    @apply mt-[7px] bg-txt3;
+  }
   .rastro-pensa-cab {
     @apply text-txt3;
   }
