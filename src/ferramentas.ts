@@ -52,7 +52,9 @@ export type ChamadaFerramenta = {
 };
 
 const SEPARADOR = "__";
-const MAX_TEXTO_MODELO = 4000;
+/** v3.74 (T057): exportado — é o limiar em que a saída de ferramenta vira ARQUIVO
+ *  na pasta da conta (o corte seco era o que jogava a cauda fora sem apelo). */
+export const MAX_TEXTO_MODELO = 4000;
 const CAMPOS_SEGREDO = /(chave|senha|password|token|secret|api[_-]?key|authorization|cookie)/i;
 const CHAVE_SECRETA = /^(mr_|sk[-_]|pk[-_]|pat[-_]|ghp_|gsp_|xox|aqa_|ya29.)/i;
 /* token sem prefixo: 20+ caracteres de alfabeto de chave (letra/grande/dígito, pouca vogal) */
@@ -385,10 +387,13 @@ export async function executarFerramenta(
         return {
           servidor: "nexos", nome: rota.original, ok: okDaSaida(r), ms: Date.now() - inicio,
           args: argsUsados, anexo: limpo as AnexoMeta,
-          saida: paraTexto({ ...(r as Record<string, unknown>), anexo: limpo }),
+          saida: textoSemCorte({ ...(r as Record<string, unknown>), anexo: limpo }),
         };
       }
-      return { servidor: "nexos", nome: rota.original, saida: paraTexto(r), ok: okDaSaida(r), ms: Date.now() - inicio, args: argsUsados };
+      /* v3.74 (T057): SEM o corte de 4000 aqui. A camada do chat (`provider.ts`) decide o
+         que fazer com a saída grande: despeja em arquivo ou corta. Cortando aqui, o texto
+         integral nunca chega ao guarda e o despejo gravaria a própria mutilação. */
+      return { servidor: "nexos", nome: rota.original, saida: textoSemCorte(r), ok: okDaSaida(r), ms: Date.now() - inicio, args: argsUsados };
     }
     const l = await linhaServidor(rota.servidor);
     const ini = await chamarServidor(l.url, l.cabecalho, {
@@ -421,7 +426,7 @@ export async function executarFerramenta(
     return {
       servidor: l.nome,
       nome: rota.original,
-      saida: resultado.isError ? `o servidor MCP devolveu erro: ${texto}` : paraTexto(texto),
+      saida: resultado.isError ? `o servidor MCP devolveu erro: ${texto}` : textoSemCorte(texto),
       ok: !resultado.isError,
       ms: Date.now() - inicio,
       args: argsUsados,
@@ -433,10 +438,19 @@ export async function executarFerramenta(
 
 /* ------------------------------------------------------- texto e segredo */
 
-/** JSON -> texto para o modelo, cortando o que afoga o contexto (base64, log grande). */
-export function paraTexto(valor: unknown): string {
+/** texto da saída SEM o corte (v3.74 / T057): o que o modelo veria se não houvesse
+ *  teto. A máscara de base64 é a mesma de `paraTexto` — arquivo grande nunca entra no
+ *  payload de jeito nenhum, cortado ou despejado. */
+export function textoSemCorte(valor: unknown): string {
   let texto = typeof valor === "string" ? valor : JSON.stringify(valor ?? null);
   texto = texto.replace(/"([A-Za-z0-9+/=]{240,})"/g, '":[arquivo em base64: $1 caracteres, não mostrei]"');
+  return texto;
+}
+
+/** JSON -> texto para o modelo, cortando o que afoga o contexto (base64, log grande).
+ *  No caminho do chat este corte só vale quando o despejo em arquivo falhou (v3.74). */
+export function paraTexto(valor: unknown): string {
+  let texto = textoSemCorte(valor);
   if (texto.length > MAX_TEXTO_MODELO) texto = texto.slice(0, MAX_TEXTO_MODELO) + `\n… [cortado: ${texto.length} caracteres]`;
   return texto;
 }

@@ -30,6 +30,7 @@
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, appendFile, chmod, chown, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -673,4 +674,138 @@ export async function rodarPython(
     uso_mb: await usoMb(base),
     ...(anexosSaida.length ? { anexo: anexosSaida[0], anexos: anexosSaida } : {}),
   };
+}
+
+/* ---------------------------------------------- v3.74 (T057): despejo de saída */
+
+/** Pasta da conta no disco — é o que `rodar_python` enxerga (cwd = scripts/saida). */
+export function pastaDaConta(tenant: string): string {
+  return path.join(RAIZ, pastaDe(tenant));
+}
+
+/** teto de UM arquivo de despejo: o que passar disso é gravado truncado, com aviso dentro
+ *  do arquivo (o teto de disco da conta é outro guarda-chuva, TETO_MB). */
+const TETO_DESPEJO_BYTES = 4 * 1024 * 1024;
+/** quantos despejos a conta guarda; o mais velho sai na escrita do próximo. */
+const MAX_DESPEJOS = 20;
+/** quanto do começo e do fim vai para o payload (a soma fica abaixo de MAX_TEXTO_MODELO). */
+const PREVIA_CHARS = 1400;
+
+/** `despejos/ler_arquivo-20261106-121530-a1b2c3.txt` — nome determinístico o bastante para
+ *  não colidir e legível o bastante para o dono achar na própria pasta. */
+function nomeDoDespejo(nomeFerramenta: string, quando: Date): string {
+  const base = String(nomeFerramenta || "ferramenta").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 40) || "ferramenta";
+  const p = (n: number, w = 2): string => String(n).padStart(w, "0");
+  const estampa =
+    `${quando.getFullYear()}${p(quando.getMonth() + 1)}${p(quando.getDate())}` +
+    `-${p(quando.getHours())}${p(quando.getMinutes())}${p(quando.getSeconds())}`;
+  return `despejos/${base}-${estampa}-${randomBytes(3).toString("hex")}.txt`;
+}
+
+/** corte alinhado a linha, para a prévia não terminar no meio de um registro. */
+function previa(texto: string, de: "comeco" | "fim"): string {
+  if (texto.length <= PREVIA_CHARS) return texto;
+  if (de === "comeco") {
+    const fatia = texto.slice(0, PREVIA_CHARS);
+    const corte = fatia.lastIndexOf("\n");
+    return fatia.slice(0, corte > PREVIA_CHARS / 2 ? corte : PREVIA_CHARS);
+  }
+  const fatia = texto.slice(-PREVIA_CHARS);
+  const corte = fatia.indexOf("\n");
+  return fatia.slice(corte >= 0 && corte < PREVIA_CHARS / 2 ? corte + 1 : 0);
+}
+
+export type Despejo = {
+  /** caminho relativo à pasta onde o script roda — é o que o modelo passa para `open()` */
+  relativo: string;
+  /** caminho absoluto dentro da conta (o dono/confere no disco) */
+  caminho: string;
+  bytes: number;
+  /** o texto que entra no payload no lugar do despejo */
+  referencia: string;
+  /** ficha do arquivo na conversa (o dono baixa pelo card do chat) */
+  anexo: AnexoMeta;
+  /** true quando o texto integral coube no teto do arquivo */
+  integro: boolean;
+};
+
+/**
+ * v3.74 (T057) — a saída grande de ferramenta vira ARQUIVO na pasta da conta.
+ *
+ * Antes, `paraTexto` cortava em 4000 caracteres e a cauda não ficava em lugar nenhum:
+ * o modelo trabalhava meio cego e o dono não tinha como recuperar o resto. Aqui o texto
+ * INTEIRO é gravado em `<conta>/scripts/saida/despejos/…` (a mesma pasta que o
+ * `rodar_python` usa como cwd, então o modelo relê o que precisa na rodada seguinte,
+ * pagando contexto só quando pede) e vira também um anexo na conversa, para o dono baixar.
+ *
+ * O arquivo é do dono da conta: mesmo volume, mesma pasta que os scripts já escrevem,
+ * dono = uid da conta, modo 0600. Não entra na base de conhecimento (não polui a busca
+ * semântica das gavetas) e é apagado pela faxina da própria conta.
+ */
+export async function despejarSaida(
+  texto: string,
+  user: Usuario,
+  nomeFerramenta: string,
+  opts: { podeReler: boolean; quando?: Date } = { podeReler: true },
+): Promise<Despejo> {
+  const relativo = nomeDoDespejo(nomeFerramenta, opts.quando ?? new Date());
+  const base = pastaDaConta(user.tenant);
+  const absoluto = path.join(base, "scripts", "saida", relativo);
+  if (!dentroDaConta(absoluto, base)) throw new Error("despejo: caminho fora da conta");
+  const uid = uidDoTenant(user.tenant);
+  const total = Buffer.byteLength(texto, "utf8");
+  const estoura = total > TETO_DESPEJO_BYTES;
+  const corpo = estoura
+    ? `${texto.slice(0, TETO_DESPEJO_BYTES)}\n\n… [despejo aparado em ${TETO_DESPEJO_BYTES} bytes: o resultado tinha ${total} bytes]`
+    : texto;
+
+  await mkdir(path.dirname(absoluto), { recursive: true });
+  await writeFile(absoluto, corpo, { encoding: "utf8", mode: 0o600 });
+  /* o script roda como uid da conta (0700 na pasta): sem isto o arquivo nascido pelo
+     servidor seria ilegível para a própria ferramenta de leitura do modelo */
+  await chown(absoluto, uid, uid).catch(() => undefined);
+  await chmod(absoluto, 0o600).catch(() => undefined);
+  await podarDespejos(path.join(base, "scripts", "saida", "despejos"), MAX_DESPEJOS);
+
+  const anexo = await criarAnexo(user, Buffer.from(corpo, "utf8"), {
+    nome: path.basename(relativo),
+    mime: "text/plain; charset=utf-8",
+    host: "servidor",
+  });
+
+  const linhas = [
+    `[saída aparada] ${nomeFerramenta} devolveu ${total} caracteres — o completo está gravado em \`${relativo}\` (${Buffer.byteLength(corpo, "utf8")} bytes, na sua pasta) e anexado nesta conversa para download.`,
+    "",
+    `COMEÇO (${previa(texto, "comeco").length} caracteres):`,
+    previa(texto, "comeco"),
+    "",
+    `FIM (${previa(texto, "fim").length} caracteres):`,
+    previa(texto, "fim"),
+  ];
+  linhas.push(
+    "",
+    opts.podeReler
+      ? `O meio NÃO está aqui. Para ler o trecho que falta, chame \`rodar_python\` com \`open("${relativo}")\` (o cwd já é a sua pasta) e imprima só as linhas que precisa — ex.: \`[l for i,l in enumerate(open("${relativo}")) if 120 <= i < 180]\`.`
+      : `O meio NÃO está aqui. Esta conta não tem \`rodar_python\` liberado, então o resto só está no arquivo anexado nesta conversa.`,
+  );
+
+  return { relativo, caminho: absoluto, bytes: Buffer.byteLength(corpo, "utf8"), referencia: linhas.join("\n"), anexo, integro: !estoura };
+}
+
+/** defesa de caminho (o nome da ferramenta vem de fora): nada de `..` escapando da conta */
+function dentroDaConta(caminho: string, base: string): boolean {
+  const b = path.resolve(base) + path.sep;
+  return path.resolve(caminho).startsWith(b);
+}
+
+/** mantém só os `max` despejos mais recentes (log grande não come o disco da conta) */
+async function podarDespejos(pasta: string, max: number): Promise<void> {
+  const { readdir } = await import("node:fs/promises");
+  const nomes = await readdir(pasta).catch(() => [] as string[]);
+  if (nomes.length <= max) return;
+  const comData = await Promise.all(
+    nomes.map(async (n) => ({ n, m: await stat(path.join(pasta, n)).then((s) => s.mtimeMs).catch(() => 0) })),
+  );
+  comData.sort((a, b) => b.m - a.m);
+  for (const velho of comData.slice(max)) await rm(path.join(pasta, velho.n), { force: true }).catch(() => undefined);
 }

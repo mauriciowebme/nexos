@@ -23,10 +23,15 @@ import {
   type ChamadaFerramenta,
   executarFerramenta,
   mascararArgs,
+  MAX_TEXTO_MODELO,
   pacoteDeFerramentas,
   paraTexto,
   resumirSaida,
+  textoSemCorte,
 } from "./ferramentas";
+/* v3.74 (T057): despejo de saída grande + permissão de ferramenta (para saber se o modelo
+   pode reler o arquivo sozinho com `rodar_python`) */
+import { ferramentaPermitida } from "./mcp_acesso";
 /* v3.70 — chamada de ferramenta que o modelo escreveu no TEXTO em vez de usar tool_calls */
 import { chamadasNoTexto, nomeReal, semBlocos, temBloco } from "./resgate";
 
@@ -63,6 +68,11 @@ export const MAX_PAIRS_PADRAO = 8;
 export const SILENCIO_PADRAO_S = 180; // 3 minutos sem escrever nada = o provider morreu
 export const TETO_TOTAL_MS = 20 * 60_000; // mesmo escrevendo sem parar, 20 min é exagero
 export const TETO_FERRAMENTA = 6000; // caracteres de cada resultado de ferramenta que entra no payload
+
+/** v3.74 (T056): na 2ª chamada IDÊNTICA do turno o resultado volta com um lembrete;
+ *  na 3ª, o turno é encerrado. O corte é duro porque já houve um aviso na cara do modelo
+ *  e a volta custa ferramenta + contexto + tempo do dono esperando. */
+export const LIMIAR_ENVASE = 3;
 
 type Linha = {
   escopo: string;
@@ -1138,7 +1148,10 @@ export type SegmentoRastro =
   | { tipo: "ferramenta"; servidor: string; nome: string; ok: boolean; ms: number; em?: number }
   /** v3.43: a pessoa falou no MEIO do turno — entra na trilha na posição em que chegou,
    *  para a interrupção não virar um balão solto depois da resposta. */
-  | { tipo: "interrupcao"; texto: string; em?: number };
+  | { tipo: "interrupcao"; texto: string; em?: number }
+  /** v3.74 (T056/T057): o GUARDA DO LAÇO falou — chamada repetida detectada ou resultado
+     aparado que virou arquivo. Linha da trilha, visível para o dono. */
+  | { tipo: "guarda"; texto: string; em?: number };
 
 /** Evento do chat com streaming (rota /chat/stream). */
 export type EventoChat =
@@ -1167,6 +1180,8 @@ export type EventoChat =
   | { tipo: "anexo"; anexo: AnexoMeta }
   /** v3.24: código da tela sendo ESCRITO (pedaço do HTML ainda em construção) */
   | { tipo: "codigo"; texto: string }
+  /** v3.74 (T056/T057): o guarda do laço falou (chamada repetida / saída virou arquivo) */
+  | { tipo: "guarda"; texto: string }
   | { tipo: "fim"; dados: Record<string, unknown> }
   | { tipo: "erro"; detalhe: string };
 
@@ -1177,6 +1192,46 @@ export type EventoChat =
  * o pensamento DENTRO de `message.content` antes de chamar a ferramenta — e ainda
  * repetem o mesmo texto em `reasoning_content`/`thinking`. Aquilo não é resposta:
  * se a rodada pediu ferramenta, o texto dela é rascunho. */
+/* ---- v3.74 (T056): detector de chamada REPETIDA no mesmo turno ----
+ * Medido no banco de produção em 06/11 (coluna `chat_mensagens.ferramentas`): dos 12 turnos
+ * com ferramenta, 2 repetiram uma chamada IDÊNTICA; o pior caso é `baixar_arquivo` chamado
+ * 3 vezes com os mesmos argumentos num turno de 32 chamadas. Cada volta paga a ferramenta,
+ * infla o contexto e segura o turno — e nada no laço percebia.
+ *
+ * A chave é nome + argumentos normalizados (chaves em ordem estável, para `{a,b}` e `{b,a}`
+ * contarem como a mesma chamada). Argumento DIFERENTE nunca é marcado — `baixar_arquivo` de
+ * arquivos diferentes é trabalho legítimo. */
+function ordemEstavel(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(ordemEstavel);
+  if (v && typeof v === "object") {
+    const saida: Record<string, unknown> = {};
+    for (const k of Object.keys(v as Record<string, unknown>).sort())
+      saida[k] = ordemEstavel((v as Record<string, unknown>)[k]);
+    return saida;
+  }
+  return v;
+}
+
+export function chaveDaChamada(nome: string, args: Record<string, unknown>): string {
+  let bruto = "";
+  try {
+    bruto = JSON.stringify(ordemEstavel(args ?? {}));
+  } catch {
+    bruto = String(args ?? "");
+  }
+  return `${String(nome ?? "")}\u0000${bruto}`;
+}
+
+/** o lembrete que volta DENTRO do resultado da ferramenta: na 2ª vez idêntica o laço ainda
+ *  executa (o estado da máquina pode ter mudado entre as chamadas) e avisa. */
+export function lembreteDeRepeticao(nome: string, vez: number, resumoAnterior: string): string {
+  return (
+    `\n\n[guarda do laço] Você já chamou \`${nome}\` com EXATAMENTE estes argumentos neste turno ` +
+    `(${vez}ª vez). Resultado anterior: ${resumoAnterior || "idêntico a este"}. ` +
+    `Se precisa de outra informação, MUDE o argumento; se já tem o que precisa, responda sem chamar de novo.`
+  );
+}
+
 const MARCA_PENSO = /^(thinking|thought|reasoning|analysis|reflex[\u00e3a]o|racioc[\u00edi]nio|vou |deixa eu |primeiro |agora vou)/i;
 const LIMITE_RASCUNHO = 160;
 
@@ -1200,7 +1255,12 @@ function textoDeRaciocinio(texto: string, pedindoFerramenta: boolean): boolean {
 /** último resultado de ferramenta disponível no histórico (usado quando o modelo trava) */
 function ultimoResultadoTool(mensagens: Mensagem[]): string {
   for (let k = mensagens.length - 1; k >= 0; k--) {
-    if (mensagens[k].role === "tool") return String(mensagens[k].content ?? "");
+    if (mensagens[k].role !== "tool") continue;
+    const c = String(mensagens[k].content ?? "");
+    /* v3.74: a marcação do guarda avisa que a chamada NÃO rodou — não é achado para
+       mostrar ao dono; sem pular, ela virava a resposta do turno */
+    if (c.startsWith("[não executada]")) continue;
+    return c;
   }
   return "";
 }
@@ -1349,6 +1409,8 @@ export async function responderChat(
     resumidas: plano.resumidas,
     pares: plano.pares,
     aparadas: plano.cortadas,
+    /** v3.74 (T057): quantas saídas de ferramenta saíram do payload e viraram arquivo */
+    despejadas: 0,
     descartadas: plano.descartadas,
     /* v3.73: `tokens` é o PEDIDO INTEIRO (prompt + conversa + ferramentas) e `disponivel` é o
        teto (janela − reserva). Antes as ferramentas entravam nos dois lados. */
@@ -1393,6 +1455,16 @@ export async function responderChat(
   /* v3.44: arquivos que as ferramentas trouxeram neste turno (print de tela, anexo) */
   const anexos: AnexoMeta[] = [];
   const falas: string[] = []; // v3.8: as falas de caminho da rodada ficam na tela (e na gaveta)
+  /* v3.74 (T056): o GUARDA DO LAÇO. Chaves de chamada já vistas neste turno (nome + args
+     normalizados) e quantas vezes cada uma rodou. O laço girava em falso sem perceber:
+     `baixar_arquivo` idêntico 3x num turno de 32 chamadas (medido no banco, 06/11). */
+  const repetidas = new Map<string, { n: number; resumo: string }>();
+  /* v3.74 (T057): saídas de ferramenta que viraram ARQUIVO na pasta da conta */
+  const despejos: Array<{ relativo: string; bytes: number; ferramenta: string }> = [];
+  let encerradoPeloGuarda = false;
+  /* tool_calls que já ganharam resposta `tool`: fechando o turno pelo guarda, as que
+     sobraram precisam de resposta mesmo assim, senão o histórico fica manco */
+  const respondidas = new Set<string>();
   /* v3.15: a trilha do turno na ordem real. O bloco de pensamento da rodada em curso fecha
      quando a rodada decide (fala, chama ferramenta ou responde) — assim o tempo dele NÃO
      carrega o tempo da ferramenta, que é linha separada. */
@@ -1469,6 +1541,8 @@ export async function responderChat(
     telas,
     /* v3.44: arquivos/prints que as ferramentas trouxeram */
     anexos,
+    /* v3.74 (T057): o que foi despejado na pasta da conta neste turno (o dono vê o caminho) */
+    despejos,
     /** v3.13: raciocínio do modelo, para a tela recolher "Pensou por Ns" ao reabrir a conversa */
     raciocinio: pensamento.trim(),
     rodadas,
@@ -1743,18 +1817,38 @@ export async function responderChat(
       } catch {
         args = { argumento_nao_entendido: String(c.function?.arguments ?? "").slice(0, 200) };
       }
+      /* v3.74 (T056): GUARDA DO LAÇO. Mesma ferramenta + mesmos argumentos já rodou neste
+         turno? Na 3ª vez nem executo: cada volta paga a ferramenta, infla o contexto e
+         segura o dono esperando, e o resultado é o mesmo. */
+      const chave = chaveDaChamada(nome, args);
+      const vistaAntes = repetidas.get(chave);
+      const vez = (vistaAntes?.n ?? 0) + 1;
+      if (vez >= LIMIAR_ENVASE) {
+        encerradoPeloGuarda = true;
+        rastro.push({
+          tipo: "guarda",
+          texto: `${nome} repetida pela ${vez}ª vez — turno encerrado pelo guarda do laço`,
+          em: decorrido(Date.now()),
+        });
+        emitir?.({ tipo: "guarda", texto: `${nome} repetida pela ${vez}ª vez — encerrando o turno` });
+        aviso =
+          aviso ??
+          `o modelo chamou \`${nome}\` pela ${vez}ª vez com os MESMOS argumentos; o turno foi encerrado para não girar em falso`;
+        break;
+      }
       /* v3.34: avisa a tela ANTES de executar — a linha viva "Consultando X… Ns" aparece
          enquanto a ferramenta roda (antes, a linha só nascia no fim e a trilha parecia parada) */
       emitir?.({ tipo: "ferramenta_inicio", nome });
       const antes = Date.now();
       const exec = await executarFerramenta(nome, args, user, pacote, { memoria });
       const duracao = Date.now() - antes;
+      const resumo = resumirSaida(exec.saida, exec.ok);
       chamadas.push({
         servidor: exec.servidor,
         nome: exec.nome,
         args: mascararArgs(exec.args ?? args),
         ok: exec.ok,
-        resumo: resumirSaida(exec.saida, exec.ok),
+        resumo,
         ms: duracao,
       });
       rastro.push({ tipo: "ferramenta", servidor: exec.servidor, nome: exec.nome, ok: exec.ok, ms: duracao, em: decorrido(antes) });
@@ -1773,8 +1867,39 @@ export async function responderChat(
         anexos.push(exec.anexo);
         emitir?.({ tipo: "anexo", anexo: exec.anexo });
       }
-      /* o resultado entra já aparado: ferramenta gulosamente verbosa não pode estourar a janela */
-      const brutoTool = paraTexto(exec.saida);
+      /* v3.74 (T057): saída maior que o teto NÃO é mais jogada fora. O texto inteiro vai
+         para arquivo na pasta da conta (onde o `rodar_python` roda, então o modelo relê o
+         trecho que precisar na rodada seguinte, pagando contexto só quando pede) e vira
+         anexo na conversa, para o dono baixar. No payload entram começo, fim e o caminho. */
+      let brutoTool = paraTexto(exec.saida);
+      const integral = textoSemCorte(exec.saida);
+      if (exec.ok && integral.length > MAX_TEXTO_MODELO) {
+        try {
+          const { despejarSaida } = await import("./sandbox");
+          const d = await despejarSaida(integral, user, exec.nome, {
+            /* sem `rodar_python` liberado na conta, o aviso não pode prometer releitura */
+            podeReler: ferramentaPermitida(tenant, user.operador, "rodar_python"),
+          });
+          despejos.push({ relativo: d.relativo, bytes: d.bytes, ferramenta: exec.nome });
+          anexos.push(d.anexo);
+          emitir?.({ tipo: "anexo", anexo: d.anexo });
+          rastro.push({
+            tipo: "guarda",
+            texto: `saída aparada: ${d.bytes} bytes gravados em \`${d.relativo}\``,
+            em: decorrido(antes),
+          });
+          emitir?.({ tipo: "guarda", texto: `saída aparada: o completo está em ${d.relativo}` });
+          brutoTool = d.referencia;
+          compactacao.despejadas++;
+        } catch (e) {
+          /* sem arquivo, volta ao corte antigo (cabeça) — melhor parcial do que turno quebrado */
+          log(`nexos: despejo de saída falhou (${exec.nome}): ${String((e as Error)?.message ?? e)}`);
+        }
+      }
+      /* v3.74 (T056): segunda vez IDÊNTICA — executou (o estado da máquina pode ter mudado
+         entre as chamadas) e o aviso volta DENTRO do resultado, na cara do modelo. */
+      repetidas.set(chave, { n: vez, resumo });
+      const lembrete = vez >= 2 ? lembreteDeRepeticao(nome, vez, vistaAntes?.resumo ?? "") : "";
       /* v3.18 (T004): documentos que a BUSCA devolveu são as fontes da resposta. A coluna
          `fontes` existia desde o 2.0 e nunca recebeu uma letra — passa a viver. Só ferramentas
          de busca: saída de outra ferramenta com campo "nome" não contamina. */
@@ -1794,12 +1919,32 @@ export async function responderChat(
           }
         }
       }
-      mensagens.push({
-        role: "tool",
-        tool_call_id: c.id,
-        content: brutoTool.length > TETO_FERRAMENTA ? `${brutoTool.slice(0, TETO_FERRAMENTA)}\n…(cortado por orçamento de contexto)` : brutoTool,
-      });
+      const aparado =
+        brutoTool.length > TETO_FERRAMENTA
+          ? `${brutoTool.slice(0, TETO_FERRAMENTA)}\n…(cortado por orçamento de contexto)`
+          : brutoTool;
       if (brutoTool.length > TETO_FERRAMENTA) compactacao.aparadas++;
+      respondidas.add(String(c.id));
+      /* o lembrete vem DEPOIS do corte: senão a ferramenta apertada comeria justamente ele */
+      mensagens.push({ role: "tool", tool_call_id: c.id, content: aparado + lembrete });
+    }
+    if (encerradoPeloGuarda) {
+      /* o texto de despedida do turno é escolhido ANTES das marcações: `ultimoResultadoTool`
+         pega a ÚLTIMA mensagem `tool`, e se as marcações entrassem antes, o dono receberia
+         "[não executada]…" como resposta do turno. */
+      texto = rascunho ? ultimoResultadoTool(mensagens) || "" : textoRodada;
+      /* chamada sem resposta `tool` no histórico derruba provedor e modelo: as que sobraram
+         recebem o motivo de não terem rodado (defesa para qualquer continuação do turno) */
+      for (const sobra of pedidas) {
+        const id = String(sobra?.id ?? "");
+        if (!id || respondidas.has(id)) continue;
+        mensagens.push({
+          role: "tool",
+          tool_call_id: id,
+          content: "[não executada] o turno foi encerrado: o modelo repetiu a mesma chamada com os mesmos argumentos.",
+        } as Mensagem);
+      }
+      break;
     }
   }
   } catch (e) {
