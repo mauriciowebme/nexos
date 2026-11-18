@@ -127,6 +127,8 @@ export type MaquinaLinha = {
   usuario_win: string | null;
   ativo: boolean;
   visto_em: string | null;
+  /** v3.75: último comando despachado nesta máquina (atividade real; `visto_em` é só o aperto de mão) */
+  ultimo_comando_em: string | null;
   criado_em: string;
   online: boolean;
   desde: string | null;

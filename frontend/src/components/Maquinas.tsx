@@ -152,7 +152,7 @@ export function Maquinas({ operador }: { operador: boolean }) {
             {operador && <th>donos</th>}
             <th>sistema</th>
             <th className="num">estado</th>
-            <th className="num">vista</th>
+            <th className="num">atividade</th>
             <th className="acoes">ações</th>
           </tr>
         </thead>
@@ -190,8 +190,18 @@ export function Maquinas({ operador }: { operador: boolean }) {
                   </span>
                 )}
               </td>
-              <td className="num" data-rot="vista">
-                {minutesAgo(m.visto_em)}
+              <td className="num" data-rot="atividade">
+                {/* v3.75: o que a máquina FEZ (comando) fica acima do aperto de mão (conexão),
+                    que não se move enquanto o cano fica aberto — máquina trabalhando parecia parada */}
+                <div className="whitespace-nowrap" title="último comando executado nesta máquina">
+                  comando {minutesAgo(m.ultimo_comando_em)}
+                </div>
+                <div
+                  className="whitespace-nowrap text-[11px] text-txt3"
+                  title="abertura da conexão atual (aperto de mão do cliente)"
+                >
+                  conexão {minutesAgo(m.visto_em)}
+                </div>
               </td>
               <td className="acoes">
                 <label className="mr-2 inline-flex cursor-pointer items-center gap-1 text-[11px]" title="desligar barra comandos e derruba o cano da máquina">
