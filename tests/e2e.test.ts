@@ -2610,6 +2610,37 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     r = await call("POST", "/maquinas/maq-01/run", { key: TESTKEY, corpo: { cmd: "nunca", timeout: 2 } });
     f.check("máquina muda responde -124 no prazo (espera+8s)", r.json?.exit === -124 && t0 - Date.now() < 30000, { status: r.status, json: r.json?.exit, ms: Date.now() - t0 });
 
+    /* v3.75 — `visto_em` é SÓ o aperto de mão: uma máquina que mantém o cano aberto por dias
+       executa centenas de comandos sem mover essa coluna, e no painel ela parecia parada.
+       `ultimo_comando_em` é a atividade real, carimbada por todo comando despachado (até o
+       que estoura o prazo, como o -124 acima). A suíte prende os dois significados. */
+    f.check(
+      "v3.75: maquinas tem a coluna ultimo_comando_em",
+      psql(`SELECT count(*) FROM information_schema.columns WHERE table_name='maquinas' AND column_name='ultimo_comando_em'`) === "1",
+      "",
+    );
+    r = await call("GET", "/maquinas", { key: TESTKEY });
+    const linAtv = (r.json?.maquinas ?? []).find((m: any) => m.host === "maq-01");
+    const msAtv = Date.now() - new Date(linAtv?.ultimo_comando_em ?? 0).getTime();
+    f.check(
+      "v3.75: rodar carimba ultimo_comando_em (o -124 acima conta como atividade)",
+      linAtv?.ultimo_comando_em != null && msAtv > 0 && msAtv < 120_000,
+      JSON.stringify({ cmd: linAtv?.ultimo_comando_em, visto: linAtv?.visto_em, ms: msAtv }),
+    );
+    /* aperto de mão é a CONEXÃO, não o comando: fotografa `visto_em`, roda um comando de
+       verdade e exige que o aperto de mão não tenha se movido, com o comando depois dele.
+       Sem a foto, qualquer reconexão do bloco faria a comparação de idade mentir. */
+    const vistoAntes = String(linAtv?.visto_em ?? "");
+    await call("POST", "/maquinas/maq-01/run", { key: TESTKEY, corpo: { cmd: "echo atividade-375" } });
+    r = await call("GET", "/maquinas", { key: TESTKEY });
+    const linPos = (r.json?.maquinas ?? []).find((m: any) => m.host === "maq-01");
+    f.check(
+      "v3.75: comando NÃO empurra visto_em (aperto de mão fica onde a conexão abriu)",
+      vistoAntes !== "" && String(linPos?.visto_em ?? "") === vistoAntes &&
+        new Date(linPos?.ultimo_comando_em ?? 0).getTime() > new Date(vistoAntes).getTime(),
+      JSON.stringify({ vistoAntes, vistoDepois: linPos?.visto_em, cmd: linPos?.ultimo_comando_em }),
+    );
+
     subir({ FQ_TOKEN: tokenMaq, FQ_HOST: "maq-01b", FQ_ARQ: "/tmp/a1b.json" });
     await ate(() => leArq("/tmp/a1b.json").includes("negado"));
     f.check("token de máquina NÃO vale para outro host", leArq("/tmp/a1b.json").includes("desconhecido"), leArq("/tmp/a1b.json").slice(0, 100));
@@ -2621,6 +2652,13 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     subir({ FQ_TOKEN: par2, FQ_HOST: "maq-03", FQ_ARQ: "/tmp/a3.json" });
     await ate(() => leArq("/tmp/a3.json").includes("negado"));
     f.check("pareamento é de uso único (segundo uso = negado)", /vencido ou ja usados|vencido ou já usado/.test(leArq("/tmp/a3.json")), leArq("/tmp/a3.json").slice(0, 120));
+
+    r = await call("GET", "/maquinas", { key: TESTKEY });
+    f.check(
+      "v3.75: máquina que nunca rodou não ganha atividade inventada",
+      (r.json?.maquinas ?? []).find((m: any) => m.host === "maq-02")?.ultimo_comando_em == null,
+      JSON.stringify((r.json?.maquinas ?? []).find((m: any) => m.host === "maq-02") ?? {}).slice(0, 160),
+    );
 
     r = await call("POST", "/maquinas", { key: OPKEY, corpo: { nome: "suite-op" } });
     subir({ FQ_TOKEN: String(r.json?.token ?? ""), FQ_HOST: "maq-op", FQ_ARQ: "/tmp/aop.json" });
@@ -2665,6 +2703,12 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     r = await mcp(3, "maquinas_online", {}, OPKEY);
     const onlMcp = JSON.parse(r.json?.result?.content?.[0]?.text ?? "{}");
     f.check("MCP maquinas_online (admin sem tenant) enxerga todas", (onlMcp?.maquinas ?? []).some((m: any) => m.host === "maq-mcp") && (onlMcp?.maquinas ?? []).some((m: any) => m.host === "maq-op"), (onlMcp?.maquinas ?? []).map((m: any) => m.host).join(","));
+    const linMcp = (onlMcp?.maquinas ?? []).find((m: any) => m.host === "maq-mcp");
+    f.check(
+      "v3.75: maquinas_online (MCP) devolve o ultimo_comando_em de quem acabou de rodar",
+      linMcp?.ultimo_comando_em != null && Date.now() - new Date(linMcp!.ultimo_comando_em).getTime() < 120_000,
+      JSON.stringify({ cmd: linMcp?.ultimo_comando_em, visto: linMcp?.visto_em }).slice(0, 160),
+    );
 
     /* apagar usuário (carência v3.5) leva máquinas, pareamentos e log junto */
     r = await call("POST", "/usuarios", { key: OPKEY, corpo: { nome: "suite-m36", papel: "usuario" } });
