@@ -67,6 +67,13 @@ export async function initMaquinas(): Promise<void> {
        PRIMARY KEY (tenant, host)
      )`,
   );
+  /* v3.75: `visto_em` é o APERTO DE MÃO — só a conexão grava (linha abaixo, no `oi`).
+     Uma máquina que mantém o cano aberto por dias fica com `visto_em` velho enquanto
+     executa centenas de comandos, e o painel parecia dizer "vista há 6 dias" para uma
+     máquina trabalhando agora. `ultimo_comando_em` é a atividade real, carimbada por
+     todo comando despachado. ALTER no boot: as máquinas criadas antes da 3.75 não têm
+     a coluna, e sem ela o SELECT da lista quebra. */
+  await q(`ALTER TABLE maquinas ADD COLUMN IF NOT EXISTS ultimo_comando_em TIMESTAMPTZ`);
   /* v3.12: apagar a máquina é definitivo — o cliente que já está instalado só volta
    * com um cliente baixado DEPOIS da remoção (regra do dono: apagar exige chave nova).
    * A marca fica registrada aqui para o servidor conferir na ativação. */
@@ -174,12 +181,12 @@ export function criarPareamento(u: Usuario, alvo: string, nomeBruto: string) {
 export async function listarMaquinas(alvo: string | null) {
   const r = alvo
     ? await q<any>(
-        `SELECT tenant, host, nome, so, usuario_win, ativo, visto_em, criado_em
+        `SELECT tenant, host, nome, so, usuario_win, ativo, visto_em, ultimo_comando_em, criado_em
          FROM maquinas WHERE tenant = $1 ORDER BY host`,
         [alvo],
       )
     : await q<any>(
-        `SELECT tenant, host, nome, so, usuario_win, ativo, visto_em, criado_em
+        `SELECT tenant, host, nome, so, usuario_win, ativo, visto_em, ultimo_comando_em, criado_em
          FROM maquinas ORDER BY tenant, host`,
       );
   return {
@@ -277,6 +284,13 @@ export async function rodar(
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
     [alvo, host, cmd, resultado.exit, stdout.slice(0, 20000), stderr, ms, origem],
   ).catch((e) => log(`maquinas: auditoria falhou: ${(e as Error).message}`));
+  /* v3.75: atividade não é conexão. Todo comando despachado carimba a máquina — inclusive
+     o que estoura o prazo (-124) e o que o cliente derruba (-1), pois o INSERT acima já
+     rodou antes do throw. É a coluna que o painel mostra ao lado do aperto de mão. */
+  await q(`UPDATE maquinas SET ultimo_comando_em = now() WHERE tenant = $1 AND host = $2`, [
+    alvo,
+    host,
+  ]).catch((e) => log(`maquinas: ultimo_comando_em falhou: ${(e as Error).message}`));
   /* T043: exit -1 = o cliente caiu entre o envio e a resposta; antes virava 502
      "máquina caiu no meio do comando", que parece defeito da máquina. É reconexão: 503. */
   if (resultado.exit === -1)

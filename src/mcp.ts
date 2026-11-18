@@ -473,7 +473,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "maquinas_online",
-    description: "Lista as maquinas do usuario com estado online (host, so, desde, ativo).",
+    description: "Lista as maquinas do usuario com estado online (host, so, desde, ativo). `visto_em` = ultimo aperto de mao da conexao; `ultimo_comando_em` = ultimo comando despachado (a atividade real de quem fica com o cano aberto por dias).",
     inputSchema: {
       type: "object",
       properties: {
