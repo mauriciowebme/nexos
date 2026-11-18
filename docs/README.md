@@ -1,6 +1,6 @@
 # Mapa da documentação — Nexos
 
-> **Última atualização:** 2026-11-04 · **Versão:** 3.72.0 · **Dono:** Mauricio
+> **Última atualização:** 2026-11-18 · **Versão:** 3.75.0 · **Dono:** Mauricio
 
 O que vai onde (lugares canônicos da casa — padrão `organizacao-documentacao`; a tabela da skill é a dona, este mapa só registra o estado do repo):
 
@@ -15,12 +15,12 @@ O que vai onde (lugares canônicos da casa — padrão `organizacao-documentacao
 | Histórico do entregue | `git log` | ✅ desde 30/10 — o histórico de versões saiu do `README.md` (eram 86 seções); o repo é a fonte |
 | Guia de uso / API | `README.md` da raiz + seção de exemplos | ✅ existe (raiz) |
 
-## Índice do estado atual (medido 2026-11-04)
+## Índice do estado atual (medido 2026-11-18)
 
 | Arquivo | Assunto | Linhas |
 |---|---|---|
-| `proximos-passos.md` | **só o aberto**: fila T### zerada na 3.73.0 (T054/T055 entregues; T052/T053 retiradas por enquanto) + ideias não numeradas | ~50 |
-| `testes.md` | contrato da suíte do nexos (ponteiro para `suite-de-testes`) | 131 |
+| `proximos-passos.md` | **só o aberto**: fila T### zerada na 3.75.0 (T058 entregue; T052/T053 retiradas por enquanto) + ideias não numeradas | 54 |
+| `testes.md` | contrato da suíte do nexos (ponteiro para `suite-de-testes`) — 42 blocos / 688 checagens, corrida em **três partes** por `SO_BLOCOS` (a corrida inteira e a divisão em duas metades não cabem mais no teto da chamada) | 152 |
 | `mcp.md` | os três papéis do nexos (agente, central de memória, servidor MCP) e o protocolo de `POST /mcp` | 181 |
 | `analises/2026-11-04-referencia-deepseek-harness.md` | referência da casa para medidor de contexto, velocidade de escrita e compactação, lida no código do DeepSeek Harness | 112 |
 

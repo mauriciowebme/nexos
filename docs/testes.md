@@ -101,17 +101,34 @@ que o segredo some da tela, não que a escrita é idempotente.
 
 ## 9. Estado da suíte hoje
 
-42 blocos nomeados (o runner reporta `tests 43` porque conta o teste-raiz da suíte junto), **683 checagens**
-(somadas na saída real da rodada de 06/11/2026 — v3.74.0, exit 0). A corrida inteira custa ~7 min e **estoura
-o teto de 420 s de uma chamada de terminal**: o que fecha o portão são as **duas metades** por `SO_BLOCOS`
-(22 blocos = 23 testes / 437 checagens em 298 s; 22 blocos = 23 testes / 265 checagens em 107 s — dois blocos
-caem nas duas metades pelo casamento por trecho de nome, então a união é 42; `fail 0` nas duas), cada uma
-precedida de `scripts/up-test.sh`. Corrida cortada no meio aparece como `tests 34 / pass 33` +
-"Promise resolution is still pending" — verde falso, refazer.
-v1.8 33 · MCP 27 · v3.36 MCP por conta 15 · v3.37 SO do Windows 4 · v1.10 24 · arquivos 20 ·
+42 blocos nomeados (o runner reporta `tests 43` porque conta o teste-raiz da suíte junto), **688 checagens**
+(somadas na saída real das rodadas de 18/11/2026 — v3.75.0, `exit 0` nas três). A corrida inteira custa ~9 min
+de runner e **estoura o teto de 420 s de uma chamada de terminal**: o que fecha o portão são as **três partes**
+por `SO_BLOCOS`, cada uma precedida de `scripts/up-test.sh` (com a imagem já no cache, a subida custa ~50 s):
+
+| Parte | `SO_BLOCOS` (trechos exatos) | Rodada medida |
+|---|---|---|
+| A1 | `v1.8:,MCP: JSON-RPC,v3.36:,v3.37:,v1.10:,arquivos: upload,imagem: OCR,v2.7:,v2.8:,v2.9:` | 10 blocos = 11 testes / 255 checagens em 200 s |
+| A2 | `v3.0:,v3.1:,v3.2:,v3.3:,v3.4:,v3.5:,v3.6:,v3.7:,v3.9:,v3.13.1:,v3.15:` | 11 blocos = 12 testes / 179 checagens em 181 s |
+| B | `v3.8:,v3.18:,v3.19:,v3.60:,v3.23:,v3.24:,v3.42 fala,v3.43:,v3.45:,v3.46:,v3.50:,v3.51:,v3.52:,v3.53:,v3.58:,v3.67:,v3.69:,v3.70 resgate,v3.71 settings,v3.74 guarda,freio de força bruta` | 21 blocos = 22 testes / 254 checagens em 164 s |
+
+**Duas metades não cabem mais** (a divisão de 06/11 estava nos 298 s): medido em 18/11, uma metade de 21 blocos
+foi cortada aos **410 s com 19 blocos concluídos** — os blocos de ingestão/OCR são caros (`v1.8` 56 s,
+`arquivos` 54 s, `v3.37` 33 s, `v3.1` 36 s) e não há como partir um bloco ao meio. Assinatura de corrida cortada:
+`tests N / pass N-1 / cancelled 1` + "Promise resolution is still pending" — verde falso, refazer.
+
+**As chaves são lidas DEPOIS da subida.** `up-test.sh` regrava `nexos_test_keys.env`; rodar
+`set -a; . …/nexos_test_keys.env` antes do script deixa a rodada com a chave da rodada anterior e os blocos
+caem em cascata (medido: 7 blocos vermelhos com `fail 7`, o primeiro em 292 ms — cara de defeito de produto).
+Ordem fixa: `up-test.sh` → `set -a; . env; set +a` → `npm test`.
+
+**`npm` do PATH é um wrapper com `--prefix` global** (`/opt/data/.local/bin/npm`): `npm test` dentro do repo
+morre em `Missing script: "build:tests"`. No nexos, rode com `PATH=/usr/local/bin:$PATH`.
+
+Checagens por bloco (somam as 688): v1.8 33 · MCP 27 · v3.36 MCP por conta 15 · v3.37 SO do Windows 4 · v1.10 24 · arquivos 20 ·
 imagem/OCR 10 · v2.7 painel/usuarios/chat 42 · v2.8 prompt/MCP interno/externo/rodadas/segredo 39 ·
 v2.9 markdown/streaming/fila 41 · v3.0 memória/orçamento/escopo 39 · v3.1 boot/chave repetida 3 ·
-v3.2 silêncio 9 · v3.3 tarefa 17 · v3.4 perfis 11 · v3.5 esquecimento-faxina 19 · v3.6 maquinas 30 ·
+v3.2 silêncio 9 · v3.3 tarefa 17 · v3.4 perfis 11 · v3.5 esquecimento-faxina 19 · **v3.6 maquinas 35** (v3.75: +5) ·
 v3.7 chave-cliente 14 · v3.9 painel 7 · v3.13.1 cliente atravessa o deploy 9 ·
 v3.15 rastro do turno 16 · v3.8 vocab e falas 11 · v3.18 básico de chat 36 · v3.19 provedores 27 ·
 v3.60 padrão e memória 6 · v3.23 telas 12 · v3.24 código ao vivo 5 · v3.42 steering 11 ·
