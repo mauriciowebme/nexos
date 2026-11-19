@@ -17,7 +17,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8002";
-/** prova de release: o /health tem que anunciar a versão que este commit promete.
+/** prova de release: `/sistema` tem que anunciar a versão que este commit promete
+ *  (desde a 3.76 o `/health` público só diz que o serviço está de pé — T059 b).
  *  Sem isso, a suíte passa verde contra um container velho (deploy que não subiu). */
 const VERSAO_ESPERADA = process.env.VERSAO ?? "3.1.0";
 const TESTKEY = process.env.TESTKEY ?? "";
@@ -180,10 +181,20 @@ test("nexos v2 — suíte completa", async (t) => {
     const f = fiscal();
 
     console.log("-- health e painel");
+    /* v3.76 (T059 b, dono 19/11): o /health público perdeu versão, contagem de contas e
+       estado dos motores — a vitrine não entrega mais mapa do servidor. Os detalhes vivem
+       em /sistema, que exige chave. A suíte prova os DOIS lados. */
     const h = await call("GET", "/health");
-    f.check(`health 200 + versao ${VERSAO_ESPERADA}`, h.status === 200 && h.json?.versao === VERSAO_ESPERADA, h.json);
-    f.check("health operador ativo", h.json?.operador === true, h.json);
-    f.check("health embedder ok", h.json?.embedder === "ok", h.json);
+    f.check("health público 200 + status ok", h.status === 200 && h.json?.status === "ok", h.json);
+    f.check("health público NÃO vaza versao", h.json?.versao === undefined, h.json);
+    f.check("health público NÃO vaza contagem de contas", h.json?.usuarios === undefined, h.json);
+    f.check("health público NÃO vaza operador/motores", h.json?.operador === undefined && h.json?.embedder === undefined, h.json);
+    const sisSem = await call("GET", "/sistema", { key: null });
+    f.check("/sistema sem chave cai em 401", sisSem.status === 401, sisSem.status);
+    const sis = await call("GET", "/sistema", { key: OPKEY });
+    f.check(`sistema 200 + versao ${VERSAO_ESPERADA}`, sis.status === 200 && sis.json?.versao === VERSAO_ESPERADA, sis.json);
+    f.check("sistema operador ativo", sis.json?.operador === true, sis.json);
+    f.check("sistema embedder ok", sis.json?.embedder === "ok", sis.json);
     const p = await call("GET", "/");
     f.check(
       "raiz serve a SPA (200 html, tela no hash)",
@@ -5144,7 +5155,7 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     if (blocosPulados.length) console.log("NÃO RODOU (o verde desta rodada não cobre isto):\n  - " + blocosPulados.join("\n  - "));
     console.log("COBRE: contrato pela porta HTTP pública, papéis (sem chave / papel errado), isolamento por escopo,"
       + " efeito lido de volta no banco, provedor FALSO obedecendo o protocolo (stream e não-stream),"
-      + " freio de força bruta, e prova de versão no /health.");
+      + " freio de força bruta, e prova de versão em /sistema (com chave; o /health público não anuncia mais nada além de ok — 3.76).");
     console.log("NÃO COBRE (nem na suíte completa):");
     for (const b of [
       "tela real: clique, render, ordem visual, fila do chat (camada visual — references/visual.md)",
