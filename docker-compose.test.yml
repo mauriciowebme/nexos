@@ -47,9 +47,23 @@ services:
       # v3.45: mesma forma da produção — arquivos por usuário num volume nomeado
       - nexostest_arquivos:/app/dados
     ports:
-      # bind configurável: no host 127.0.0.1 basta; de dentro de outro
-      # container (CI/Hermes) use 0.0.0.0 e acesse pelo IP da ponte
-      - "${NEXOS_TEST_BIND:-${MINIRAG_TEST_BIND:-127.0.0.1}}:${NEXOS_TEST_PORT:-${MINIRAG_TEST_PORT:-8001}}:8000"
+      # Bind SEMPRE restrito — nunca 0.0.0.0. Em 19/11/2026 este ambiente estava
+      # publicado em 0.0.0.0:8002 e qualquer pessoa na internet leu o /health
+      # (versão + contagem de contas). 127.0.0.1 = host; 172.28.0.1 = gateway da
+      # rede própria (fixa abaixo), por onde a suíte — que roda dentro de outro
+      # container — chega aqui.
+      - "127.0.0.1:${NEXOS_TEST_PORT:-${MINIRAG_TEST_PORT:-8001}}:8000"
+      - "${NEXOS_TEST_BIND:-172.28.0.1}:${NEXOS_TEST_PORT:-${MINIRAG_TEST_PORT:-8001}}:8000"
+
+networks:
+  default:
+    # Sub-rede FIXA (era 172.28.0.0/16 a cada subida, escolhida pelo docker).
+    # O bind acima aponta para a gateway desta rede, então o endereçamento não
+    # pode mudar a cada `down -v` — o compose precisa conhecer o IP antes de subir.
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
 
 volumes:
   nexostest_data:

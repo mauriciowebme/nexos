@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 COMPOSE="${COMPOSE:-/opt/data/.local/bin/docker-compose}"
 PROJ="${PROJ:-nexostest}"                       # prefixo do compose => nome dos containers
 PORTA="${PORTA:-8002}"
-BIND="${BIND:-0.0.0.0}"                           # 0.0.0.0: suíte roda de dentro de outro container
+BIND="${BIND:-172.28.0.1}"                        # gateway da rede própria (fixa no compose); NUNCA 0.0.0.0 — publicada, a internet lia o /health dos testes (T059)
 ENV_FILE="${ENV_FILE:-/opt/data/cache/scratch/nexos_test_keys.env}"
 
 # a versão esperada vem do código (src/config.ts), não de chute
