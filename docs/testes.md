@@ -14,9 +14,18 @@ bloco é destrutivo**. O método (regras, esqueleto, buracos clássicos) não se
 | Modo (canônica §"Portas de alvo") | **Instância descartável** — sempre. `docker-compose.test.yml` com projeto, rede e volume próprios; banco zerado a cada rodada. |
 | Subida limpa | `scripts/up-test.sh` (derruba → apaga volume → **reconstrói a imagem** → sobe → gera chaves → espera `/health` → escreve o env da rodada). |
 | Arquivo de chaves/ambiente da rodada | `/opt/data/cache/scratch/nexos_test_keys.env` (o script regrava; o scratch expira em 24 h, por isso o script é o caminho, não o arquivo). |
-| Porta local | `${MINIRAG_TEST_PORT:-8001}`; aqui usamos **8002** com bind `0.0.0.0` porque a suíte roda dentro de outro container e fala com a API pelo **gateway da rede do compose** — que é lido pelo script (`docker network inspect ${PROJ}_default`) e **muda de subnet a cada `down -v`** (vi `172.23.0.1` e depois `192.168.64.1` na mesma semana). Fixar IP de ponte no histórico é erro. O comando `ip` **não existe** no container do Hermes: nada no script pode depender dele (com `pipefail`, uma atribuição que falha derruba tudo em silêncio). |
+| Porta local | `${MINIRAG_TEST_PORT:-8001}`; aqui usamos **8002** com bind **restrito** (`127.0.0.1` + gateway `172.28.0.1`) porque a suíte roda dentro de outro container e fala com a API pelo **gateway da rede do compose**. Desde 19/11 a sub-rede é **fixa no compose** (`networks.default.ipam`: `172.28.0.0/24`, gw `172.28.0.1`) — o bind precisa existir antes da subida, e o script continua lendo a gateway do docker (defensivo). **Nunca `0.0.0.0`**: assim publicado, um navegador em nuvem leu o `/health` dos testes pela internet (T059). O comando `ip` **não existe** no container do Hermes: nada no script pode depender dele (com `pipefail`, uma atribuição que falha derruba tudo em silêncio). |
 | Banco espelho de produção | **Nunca** alvo da suíte (regra 1). Serve só para conferência manual pontual. |
 | Produção | Jamais alvo. A suíte cria usuário, apaga documento e provoca o freio de força bruta de propósito. |
+
+**Banco sujo derruba bloco bom** (medido 19/11): o bloco `v1.8` compara listas por `doc_id` e cai em
+duas checagens (`operador lista docs de 'teste'`, `docX INTEIRO continua ativo`) quando o volume já
+tem resíduo de rodada anterior — inclusive de uma suíte **cortada no meio** (a chamada de shell corta
+em 420 s e `npm test` inteiro custa ~5 min). No mesmo código, com volume limpo, `v1.8` fica verde
+(38 asserts em 48 s). Regra prática: **recriar com volume novo antes da bateria**, e depois de um run
+cortado não confiar no seguinte sem recriar. Como a bateria não cabe numa chamada, ela roda em **três
+etapas sobre o MESMO banco limpo** (`SO_BLOCOS` em lotas de 14 blocos; `v1.8` sempre no primeiro lote),
+e cada etapa nomeia nominalmente os blocos pulados — verde parcial disfarçado é o pior defeito (regra 8).
 
 ## 2. Porta do juiz
 
@@ -38,7 +47,7 @@ declaradas, as duas contra o ambiente de teste:
 |---|---|---|---|
 | operador | `op` (nome da semente `MINIRAG_ADMIN`; o bloco v3.1 exercita a renomeação no SQL) | `POST /usuarios`, `PUT /config/provider` global, ver o escopo dos outros, painel | — |
 | usuário | **`teste`** (semente `MINIRAG_USERS`) | `POST /chat`, `/gavetas`, documentos do **próprio** escopo, `PUT /config/provider` na própria linha | gerir usuário, mexer na linha global |
-| sem chave | — | `/health`, `/painel/` (HTML) | tudo o resto → **401**; papel errado → **403** |
+| sem chave | — | `/health` (desde a 3.76 devolve só `{"status":"ok"}`), `/painel/` (HTML) | tudo o resto → **401** (`/sistema` entrou aqui na 3.76); papel errado → **403** |
 
 **O nome da semente não é intercambiável**: os blocos v1.8, MCP e v2.7 comparam `tenant === "teste"`
 (uns 10 asserts). Medido 21/10: subir o ambiente com `usuario:<chave>` no lugar de `teste:<chave>`
@@ -49,10 +58,17 @@ avulsa com query devolve 401 e não é regressão.
 
 ## 5. Prova de release (onde a versão aparece)
 
-Primeiro bloco (`v1.8: documents, escopos e decay por documento`): `GET /health` tem que responder
-`versao == $VERSAO`, e a suíte **recusa** rodar sem `TESTKEY`/`OPKEY`. `$VERSAO` é lido de
+Primeiro bloco (`v1.8: documents, escopos e decay por documento`): `GET /sistema` (com chave) tem que
+responder `versao == $VERSAO`, e a suíte **recusa** rodar sem `TESTKEY`/`OPKEY`. `$VERSAO` é lido de
 `src/config.ts` pelo `up-test.sh` (ou passado por `PROVA_VS=`). É isso que impede verde contra
-container velho. Na tela, a mesma versão aparece no rodapé do painel e no campo `versao` do `/health`.
+container velho. Na tela, a mesma versão aparece no rodapé do painel e no campo `versao` de `/sistema`.
+
+**3.76 (T059 b):** a prova de versão saiu do `/health` porque o `/health` público deixou de anunciar
+qualquer detalhe do servidor — a vitrine entrega só `{"status":"ok"}`; versão, contagem de contas e
+estado dos motores passaram a `GET /sistema`, que exige chave. O bloco v1.8 prova os dois lados (o
+`/health` **não** pode ter `versao`/`usuarios`/`operador`/`embedder`; `/sistema` sem chave cai em 401).
+A ferramenta `health` (MCP, chat e `nexos.health()` do sandbox) continua com o payload cheio — é por
+ela que se lê a versão no ar em produção, não mais pelo `/health`.
 
 ## 6. Bloco destrutivo (a ordem é essa)
 
@@ -101,8 +117,9 @@ que o segredo some da tela, não que a escrita é idempotente.
 
 ## 9. Estado da suíte hoje
 
-42 blocos nomeados (o runner reporta `tests 43` porque conta o teste-raiz da suíte junto), **688 checagens**
-(somadas na saída real das rodadas de 18/11/2026 — v3.75.0, `exit 0` nas três). A corrida inteira custa ~9 min
+42 blocos nomeados (o runner reporta `tests 43` porque conta o teste-raiz da suíte junto), **693 checagens**
+(somadas na saída real das rodadas de 18/11/2026 — v3.75.0 — **+5** da rodada de 19/11/2026, v3.76.0: o bloco
+`v1.8` foi de 33 a 38 checagens com as travas do T059 b). A corrida inteira custa ~9 min
 de runner e **estoura o teto de 420 s de uma chamada de terminal**: o que fecha o portão são as **três partes**
 por `SO_BLOCOS`, cada uma precedida de `scripts/up-test.sh` (com a imagem já no cache, a subida custa ~50 s):
 
@@ -125,7 +142,16 @@ Ordem fixa: `up-test.sh` → `set -a; . env; set +a` → `npm test`.
 **`npm` do PATH é um wrapper com `--prefix` global** (`/opt/data/.local/bin/npm`): `npm test` dentro do repo
 morre em `Missing script: "build:tests"`. No nexos, rode com `PATH=/usr/local/bin:$PATH`.
 
-Checagens por bloco (somam as 688): v1.8 33 · MCP 27 · v3.36 MCP por conta 15 · v3.37 SO do Windows 4 · v1.10 24 · arquivos 20 ·
+**Rodada de 19/11/2026 (v3.76.0, T059 b) — verde nas três partes**, com lotas de 14 blocos em vez das de cima
+(o corte é escolha, desde que cada parte nomeie os pulados e o primeiro lote leve o `v1.8` com banco limpo):
+A `v1.8:,MCP:,v3.36,v3.37,v1.10,arquivos:,imagem:,v2.7:,v2.8:,v2.9:,v3.0:,v3.1:,v3.2:,v3.3:` → 15 testes /
+261 s; B `v3.4:,v3.5:,v3.6:,v3.7:,v3.9,v3.13.1,v3.15,v3.8:,v3.18:,v3.19:,v3.60:,v3.23:,v3.24:,v3.42` →
+15 testes / 191 s; C `v3.43:,v3.45:,v3.46:,v3.50:,v3.51:,v3.52:,v3.53:,v3.58:,v3.67:,v3.69:,v3.70 resgate,`
+`v3.71 settings,v3.74 guarda,freio de força bruta` → 15 testes / 90 s. `pass 15 / fail 0` em cada parte,
+nessa ordem sobre o mesmo volume limpo. Primeira tentativa sem recriar o volume: `v1.8` vermelho por resíduo
+(ver §1) — refazer com banco limpo resolveu, nenhum código mudou entre as duas.
+
+Checagens por bloco (somam as 693): v1.8 38 (era 33; +5 na 3.76) · MCP 27 · v3.36 MCP por conta 15 · v3.37 SO do Windows 4 · v1.10 24 · arquivos 20 ·
 imagem/OCR 10 · v2.7 painel/usuarios/chat 42 · v2.8 prompt/MCP interno/externo/rodadas/segredo 39 ·
 v2.9 markdown/streaming/fila 41 · v3.0 memória/orçamento/escopo 39 · v3.1 boot/chave repetida 3 ·
 v3.2 silêncio 9 · v3.3 tarefa 17 · v3.4 perfis 11 · v3.5 esquecimento-faxina 19 · **v3.6 maquinas 35** (v3.75: +5) ·
