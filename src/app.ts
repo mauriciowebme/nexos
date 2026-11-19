@@ -219,7 +219,19 @@ export function criarApp(): FastifyInstance {
   /* ------------------------------------------------------------- básicas */
 
   definirHealth(health); // ferramenta interna do chat usa o mesmo health da rota
-  app.get("/health", async () => health());
+
+  /* v3.76 — T059(b), dono 19/11: o `/health` público anuncia SÓ que o serviço está de pé.
+     Versão, contagem de contas e estado dos motores (embedder/OCR) saíram da vitrine: a
+     produção está atrás de proxy público e qualquer um que chutasse o endereço lia a
+     versão exata e quantas contas existem — mapa pronto para procurar falha da versão.
+     Quem precisa dos detalhes passa a ler `GET /sistema`, que exige chave. A ferramenta
+     `health` (MCP e chat) e o `nexos.health()` do sandbox continuam com o payload cheio. */
+  app.get("/health", async () => ({ status: "ok" }));
+
+  app.get("/sistema", async (req) => {
+    usuario(req);
+    return health();
+  });
 
   /* v3.27 (dono, 27/10): a SPA passou a ser servida na RAIZ e a tela mora no hash
      (#/chat, #/painel, #/buscar...). Antes a raiz pulava para /painel/ e o endereço
