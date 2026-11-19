@@ -1271,7 +1271,7 @@ function Sistema() {
   const [c, setC] = useState<ConfigResp | null>(null);
 
   useEffect(() => {
-    void get<HealthResp>("/health").then(setH).catch((e) => toast("health: " + (e as Error).message, "erro"));
+    void get<HealthResp>("/sistema").then(setH).catch((e) => toast("sistema: " + (e as Error).message, "erro"));
     void get<ConfigResp>("/config").then(setC).catch(() => undefined);
   }, [toast]);
 

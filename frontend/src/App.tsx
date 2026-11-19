@@ -152,7 +152,7 @@ export default function App() {
        v3.27: se o endereço já traz a tela (#/painel etc.), ele manda — F5 continua onde estava. */
     const alvo = vistaDoHash();
     setVista(alvo && (sessao.sessao.operador || VISTAS_DO_COMUM.includes(alvo)) ? alvo : "chat");
-    get<HealthResp>("/health")
+    get<HealthResp>("/sistema")
       .then((h) => setVersao(h.versao || "?"))
       .catch(() => undefined);
     get<{ controle_maquinas?: boolean }>("/config/mcp")
