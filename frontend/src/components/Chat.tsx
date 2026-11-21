@@ -437,7 +437,8 @@ function Rastro({
             }
             if (s.tipo === "guarda") {
               /* v3.74 (T056/T057): o guarda do laço — o servidor percebeu que o modelo
-                 repetiu a mesma chamada, ou que a saída virou arquivo na pasta da conta.
+                 repetiu a mesma chamada, ou que a saída grande foi aparada no teto do
+                 modelo (3.77: não nasce mais arquivo na pasta da conta).
                  Linha na trilha, no ponto em que aconteceu (o dono vê a máquina trabalhar). */
               return (
                 <div className="rastro-linha rastro-guarda" key={`g${i}`} data-testid="rastroGuarda">
