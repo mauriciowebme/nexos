@@ -4,8 +4,8 @@
  * A suíte de contrato (tests/e2e.test.ts, bloco v3.74) prova o turno pela porta HTTP.
  * Aqui fica o que o contrato não distingue sozinho: a CHAVE da chamada tem de ser a
  * mesma quando o modelo escreve os argumentos em ordem diferente (senão o guarda não vê
- * a repetição), e o texto que vira arquivo tem de ser o SEM CORTE (senão o despejo
- * grava justamente a cauda que se queria preservar).
+ * a repetição), e o texto que chega ao guarda de orçamento tem de ser o SEM CORTE (senão o
+ * tamanho anunciado ao modelo seria a própria mutilação).
  *
  * Medido no banco em 06/11: `baixar_arquivo` chamado 3x com os mesmos argumentos num
  * turno de 32 chamadas — o laço não percebia.
@@ -69,12 +69,13 @@ test("o lembrete diz o que repetiu, quantas vezes e o que fazer", () => {
   assert.ok(l.includes("3 gavetas"), "o resultado anterior tem de voltar junto");
 });
 
-test("T057: o texto do despejo é o SEM CORTE, e base64 nunca vai para o arquivo", () => {
-  const corpo = "L1\n".repeat(3000); // 12.000 chars: maior que o teto do payload
+test("T057/v3.77: o texto que chega ao guarda é o SEM CORTE, e base64 não vai para o payload", () => {
+  assert.equal(MAX_TEXTO_MODELO, 20_000, "mexeu no teto, mexe no contrato do bloco v3.74");
+  const corpo = "L1\n".repeat(12_000); // 36.000 chars: maior que o teto de 20.000 do payload
   const bruto = textoSemCorte({ saida: corpo });
-  assert.ok(bruto.length > MAX_TEXTO_MODELO, "sem corte é o que o despejo grava");
+  assert.ok(bruto.length > MAX_TEXTO_MODELO, "o guarda de orçamento recebe o texto inteiro");
   const cortado = paraTexto({ saida: corpo });
-  assert.ok(cortado.length <= MAX_TEXTO_MODELO + 60, "paraTexto continua cortando (fallback)");
+  assert.ok(cortado.length <= MAX_TEXTO_MODELO + 60, "paraTexto continua cortando (outros caminhos)");
   assert.ok(cortado.includes("[cortado:"), "o corte antigo está marcado");
 
   const b64 = "A".repeat(400);

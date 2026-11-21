@@ -4975,7 +4975,7 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.fechar("v3.71 settings nos lugares certos");
   });
 
-  await bloco(t, "v3.74 guarda do laço: chamada repetida e saída que vira arquivo", async () => {
+  await bloco(t, "v3.74 guarda do laço: chamada repetida e saída aparada (v3.77: sem arquivo)", async () => {
     const f = fiscal();
     const CONTAINER = process.env.CONTAINER ?? "";
     const DB = process.env.DBCONTAINER ?? "";
@@ -5004,7 +5004,7 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
       "const n=m.filter(x=>x.role==='tool').length;",
       "const tc=(id,nome,args)=>({id,type:'function',function:{name:nome,arguments:JSON.stringify(args)}});",
       "let cham=null;",
-      "if(q.indexOf('DESPEJO')>=0){if(n===0)cham=[tc('d1','rodar_python',{codigo:'for i in range(1,201):\\n    print(f\"LINHA-{i:04d} \" + (chr(88)*40))\\nprint(\"ZZZ-FIM-DA-SAIDA\")'})];}",
+      "if(q.indexOf('DESPEJO')>=0){if(n===0)cham=[tc('d1','rodar_python',{codigo:'for i in range(1,501):\\n    print(f\"LINHA-{i:04d} \" + (chr(88)*40))\\nprint(\"ZZZ-FIM-DA-SAIDA\")'})];}",
       "else if(q.indexOf('REPETE')>=0){if(n<3)cham=[tc('r'+n,'list_gavetas',{})];}",
       "else if(q.indexOf('MUDA')>=0){if(n===0)cham=[tc('m1','search',{query:'alfa v374'})];else if(n===1)cham=[tc('m2','search',{query:'bravo v374'})];}",
       "const fim=(txt)=>({choices:[{message:{role:'assistant',content:txt},finish_reason:'stop'}]});",
@@ -5080,47 +5080,63 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.check("v3.74 nenhuma linha de guarda na trilha do caso legítimo", !(d.rastro ?? []).some((s: any) => s.tipo === "guarda"), (d.rastro ?? []).map((s: any) => s.tipo).join(","));
     f.check("v3.74 sem aviso de repetição no caso legítimo", !/mesmos argumentos/i.test(String(d.aviso ?? "")), d.aviso);
 
-    /* ================= T057: a saída grande vira ARQUIVO, não cauda jogada fora =================
-       `rodar_python` é do operador (v3.50), então a conta é a `op` e o arquivo nasce em
-       /app/dados/usuarios/op/scripts/saida/despejos/. */
-    console.log("-- v3.74 DESPEJO: saída de 9 mil caracteres vira arquivo na pasta da conta");
+    /* ============ T057 revogado (v3.77): a saída grande é APARADA, não vira arquivo ============
+       O dono escolheu o caminho objetivo: nenhum arquivo novo, nenhum card, nenhum contador.
+       O corte é na cabeça, o marcador diz o tamanho real e como buscar o resto, e a linha
+       fica na trilha (visível e gravada). `rodar_python` é do operador (v3.50) → conta `op`. */
+    console.log("-- v3.77 CORTE: saída de ~26 mil caracteres é aparada na cabeça (sem arquivo, sem card)");
     noContainer("rm -rf /app/dados/usuarios/op/scripts/saida/despejos");
     ({ r, pedidos } = await doTurno("DESPEJO suite v374", "suite-v374-despejo", OPKEY));
     d = r.json ?? {};
-    f.check("v3.74 /chat do despejo respondeu JSON", r.status === 200 && !!r.json, r.status + " " + r.texto.slice(0, 160));
-    const dj = (d.despejos ?? [])[0] ?? {};
-    f.check("v3.74 o turno declara 1 despejo da ferramenta certa", (d.despejos ?? []).length === 1 && dj.ferramenta === "rodar_python", d.despejos);
-    f.check("v3.74 o arquivo tem o corpo inteiro (>9 mil bytes)", dj.bytes > 9000, dj.bytes);
-    f.check("v3.74 compactação conta o despejo", d.compactacao?.despejadas === 1, d.compactacao?.despejadas);
-    f.check("v3.74 o arquivo virou anexo na conversa", (d.anexos ?? []).some((a: any) => /^rodar_python-\d{8}-\d{6}-[0-9a-f]{6}\.txt$/.test(String(a.nome ?? ""))), (d.anexos ?? []).map((a: any) => a.nome));
-    f.check("v3.74 a trilha mostra a saída aparada", (d.rastro ?? []).some((s: any) => s.tipo === "guarda" && /saída aparada/.test(String(s.texto ?? ""))), (d.rastro ?? []).map((s: any) => s.tipo).join(","));
+    f.check("v3.77 /chat da saída grande respondeu JSON", r.status === 200 && !!r.json, r.status + " " + r.texto.slice(0, 160));
+    f.check("v3.77 o turno NÃO declara despejo (campo revogado)", d.despejos === undefined, d.despejos);
+    f.check("v3.77 a compactação NÃO conta despejo", d.compactacao?.despejadas === undefined, d.compactacao);
+    f.check("v3.77 a compactação conta 1 saída aparada", d.compactacao?.aparadas === 1, d.compactacao?.aparadas);
 
-    /* (a) o arquivo no disco tem a LINHA DO MEIO, que era o que se perdia */
-    let disco = "";
+    /* (a) NENHUM arquivo nasce na pasta da conta: o despejo acabou de verdade */
+    let arquivosDespejo = "?";
     try {
-      disco = noContainer(`cat /app/dados/usuarios/op/scripts/saida/${dj.relativo}`);
+      arquivosDespejo = String(noContainer("ls -1 /app/dados/usuarios/op/scripts/saida/despejos 2>/dev/null | wc -l")).trim();
     } catch (e) {
-      disco = "";
+      arquivosDespejo = "0";
     }
-    f.check("v3.74 o arquivo gravado existe na pasta da conta", disco.length > 9000, `${dj.relativo} -> ${disco.length} chars`);
-    f.check("v3.74 o arquivo guarda o meio (LINHA-0100) e o fim", disco.includes("LINHA-0100") && disco.includes("ZZZ-FIM-DA-SAIDA"), disco.slice(-120));
+    f.check("v3.77 nenhuma pasta de despejo foi criada", arquivosDespejo === "0", arquivosDespejo);
+    f.check("v3.77 nenhum card de despejo na conversa", !(d.anexos ?? []).some((a: any) => /^rodar_python-\d{8}-\d{6}-[0-9a-f]{6}\.txt$/.test(String(a.nome ?? ""))), (d.anexos ?? []).map((a: any) => a.nome));
 
-    /* (b) o payload do modelo: começo + fim + caminho, sem o bloco inteiro */
-    const pay = JSON.stringify(pedidos[pedidos.length - 1]?.messages ?? []);
-    /* o JSON escapa as aspas de open("…"): a frase do guarda se confere no texto da mensagem */
+    /* (b) o payload: cabeça inteira + marcador honesto (a cauda sai, e o modelo é avisado) */
     const txtTool = (pedidos[pedidos.length - 1]?.messages ?? [])
       .filter((m: any) => m.role === "tool")
       .map((m: any) => String(m.content ?? ""))
       .join("\n");
-    f.check("v3.74 o payload avisa que a saída foi aparada", pay.includes("[saída aparada]"), pay.slice(0, 200));
-    f.check("v3.74 o payload traz o COMEÇO e o FIM (a cauda não some mais)", pay.includes("COMEÇO (") && pay.includes("FIM (") && pay.includes("LINHA-0199") && pay.includes("ZZZ-FIM-DA-SAIDA"), pay.length);
-    f.check("v3.74 o payload NÃO carrega o despejo inteiro", !pay.includes("LINHA-0100") && pay.length < 40000, `${pay.length} chars do payload`);
-    f.check("v3.74 o payload diz o caminho e como reler o meio", pay.includes(String(dj.relativo ?? "@@")) && txtTool.includes('open("'), txtTool.match(/open\("[^"]+"\)/)?.[0] ?? "sem open()");
+    const marcado = /a saída tinha (\d+) caracteres/.exec(txtTool);
+    f.check("v3.77 o payload avisa do corte com o tamanho real", !!marcado && Number(marcado[1]) > 20000, marcado ? `${marcado[1]} chars anunciados / ${txtTool.length} no payload` : txtTool.slice(-200));
+    f.check("v3.77 a cabeça chegou inteira (LINHA-0001 e LINHA-0300)", txtTool.includes("LINHA-0001") && txtTool.includes("LINHA-0300"), txtTool.slice(0, 90));
+    f.check("v3.77 a cauda ficou fora e o marcador fecha o texto", !txtTool.includes("ZZZ-FIM-DA-SAIDA") && /cortado por orçamento de contexto/.test(txtTool), txtTool.slice(-200));
+    f.check("v3.77 o marcador ensina a buscar o resto", /tail, grep ou LIMIT/.test(txtTool), txtTool.slice(-300));
+    f.check("v3.77 o resultado aparado respeita o teto (20.000 + marcador)", txtTool.length <= 20000 + 400, `${txtTool.length} chars`);
 
-    /* (c) o rastro sobrevive ao reabrir a conversa (gravação, não só emissão ao vivo) */
+    /* (c) a linha do guarda aparece na trilha e sobrevive ao reabrir a conversa */
+    f.check("v3.77 a trilha mostra a saída aparada", (d.rastro ?? []).some((s: any) => s.tipo === "guarda" && /saída de rodar_python aparada/.test(String(s.texto ?? ""))), (d.rastro ?? []).map((s: any) => s.tipo).join(","));
     const lido = await call("GET", "/chat?memoria=suite-v374-despejo", { key: OPKEY });
-    const guardaNoHistorico = JSON.stringify(lido.json ?? {}).includes("saída aparada");
-    f.check("v3.74 a linha do guarda está gravada na conversa", lido.status === 200 && guardaNoHistorico, `${lido.status} ${lido.texto.slice(0, 120)}`);
+    const guardaNoHistorico = JSON.stringify(lido.json ?? {}).includes("saída de rodar_python aparada");
+    f.check("v3.77 a linha do guarda está gravada na conversa", lido.status === 200 && guardaNoHistorico, `${lido.status} ${lido.texto.slice(0, 120)}`);
+
+    /* (d) v3.77: o evento AO VIVO do guarda tem o MESMO texto da trilha gravada. Antes o
+       ao vivo dizia só "saída aparada em N caracteres" — sem a ferramenta nem o tamanho
+       original — e a tela mostrava menos do que o histórico ao reabrir a conversa. */
+    const vivo = await fluxo(OPKEY, { pergunta: "DESPEJO suite v374 ao vivo", memoria: "suite-v374-despejo", provedor: "suite-v374" });
+    const guardasVivos = vivo.eventos.filter((e: any) => e?.tipo === "guarda" && /saída de rodar_python aparada/.test(String(e.texto ?? "")));
+    f.check(
+      "v3.77 o evento ao vivo do guarda nomeia a ferramenta e o tamanho original",
+      guardasVivos.length === 1 && /saída de rodar_python aparada em 20000 caracteres \(dos \d+\)/.test(String(guardasVivos[0].texto)),
+      JSON.stringify(vivo.eventos.filter((e: any) => e?.tipo === "guarda")),
+    );
+    const histVivo = await call("GET", "/chat?memoria=suite-v374-despejo", { key: OPKEY });
+    f.check(
+      "v3.77 o texto ao vivo é o MESMO que fica gravado na conversa",
+      guardasVivos.length === 1 && JSON.stringify(histVivo.json ?? {}).includes(String(guardasVivos[0].texto)),
+      String(guardasVivos[0]?.texto ?? "(sem evento)"),
+    );
 
     /* limpeza: provedor, fake, conversas e despejos da conta */
     psql(`DELETE FROM provedores WHERE nome='suite-v374'`);
