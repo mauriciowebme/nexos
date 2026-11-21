@@ -25,13 +25,9 @@ import {
   mascararArgs,
   MAX_TEXTO_MODELO,
   pacoteDeFerramentas,
-  paraTexto,
   resumirSaida,
   textoSemCorte,
 } from "./ferramentas";
-/* v3.74 (T057): despejo de saída grande + permissão de ferramenta (para saber se o modelo
-   pode reler o arquivo sozinho com `rodar_python`) */
-import { ferramentaPermitida } from "./mcp_acesso";
 /* v3.70 — chamada de ferramenta que o modelo escreveu no TEXTO em vez de usar tool_calls */
 import { chamadasNoTexto, nomeReal, semBlocos, temBloco } from "./resgate";
 
@@ -67,7 +63,13 @@ export const MAX_PAIRS_PADRAO = 8;
    Agora: orçamento de SILÊNCIO (renova a cada pedaço) + teto total de segurança. */
 export const SILENCIO_PADRAO_S = 180; // 3 minutos sem escrever nada = o provider morreu
 export const TETO_TOTAL_MS = 20 * 60_000; // mesmo escrevendo sem parar, 20 min é exagero
-export const TETO_FERRAMENTA = 6000; // caracteres de cada resultado de ferramenta que entra no payload
+/* v3.77: UM corte por resultado de ferramenta, no mesmo número do teto de texto. Na
+   época do teto 6000 com despejo em 4000, saída entre 6k e 20k entrava sem arquivo e
+   ainda era cortada em 6000 na cara do modelo (a cauda sumia de novo, sem rastro); o
+   despejo foi revogado na 3.77, sobrou este corte. O `apertarRodada` (compactar.ts)
+   cuida do payload total a cada rodada; este corte cuida de UMA saída —
+   é o buraco que ele não tapa, porque nunca corta a mensagem mais recente. */
+export const TETO_FERRAMENTA = MAX_TEXTO_MODELO; // caracteres de cada resultado de ferramenta que entra no payload
 
 /** v3.74 (T056): na 2ª chamada IDÊNTICA do turno o resultado volta com um lembrete;
  *  na 3ª, o turno é encerrado. O corte é duro porque já houve um aviso na cara do modelo
@@ -1149,8 +1151,8 @@ export type SegmentoRastro =
   /** v3.43: a pessoa falou no MEIO do turno — entra na trilha na posição em que chegou,
    *  para a interrupção não virar um balão solto depois da resposta. */
   | { tipo: "interrupcao"; texto: string; em?: number }
-  /** v3.74 (T056/T057): o GUARDA DO LAÇO falou — chamada repetida detectada ou resultado
-     aparado que virou arquivo. Linha da trilha, visível para o dono. */
+  /** v3.74/v3.77 (T056/T057): o GUARDA DO LAÇO falou — chamada repetida detectada ou saída
+     aparada por orçamento de contexto. Linha da trilha, visível para o dono. */
   | { tipo: "guarda"; texto: string; em?: number };
 
 /** Evento do chat com streaming (rota /chat/stream). */
@@ -1409,8 +1411,6 @@ export async function responderChat(
     resumidas: plano.resumidas,
     pares: plano.pares,
     aparadas: plano.cortadas,
-    /** v3.74 (T057): quantas saídas de ferramenta saíram do payload e viraram arquivo */
-    despejadas: 0,
     descartadas: plano.descartadas,
     /* v3.73: `tokens` é o PEDIDO INTEIRO (prompt + conversa + ferramentas) e `disponivel` é o
        teto (janela − reserva). Antes as ferramentas entravam nos dois lados. */
@@ -1459,8 +1459,6 @@ export async function responderChat(
      normalizados) e quantas vezes cada uma rodou. O laço girava em falso sem perceber:
      `baixar_arquivo` idêntico 3x num turno de 32 chamadas (medido no banco, 06/11). */
   const repetidas = new Map<string, { n: number; resumo: string }>();
-  /* v3.74 (T057): saídas de ferramenta que viraram ARQUIVO na pasta da conta */
-  const despejos: Array<{ relativo: string; bytes: number; ferramenta: string }> = [];
   let encerradoPeloGuarda = false;
   /* tool_calls que já ganharam resposta `tool`: fechando o turno pelo guarda, as que
      sobraram precisam de resposta mesmo assim, senão o histórico fica manco */
@@ -1541,8 +1539,6 @@ export async function responderChat(
     telas,
     /* v3.44: arquivos/prints que as ferramentas trouxeram */
     anexos,
-    /* v3.74 (T057): o que foi despejado na pasta da conta neste turno (o dono vê o caminho) */
-    despejos,
     /** v3.13: raciocínio do modelo, para a tela recolher "Pensou por Ns" ao reabrir a conversa */
     raciocinio: pensamento.trim(),
     rodadas,
@@ -1867,35 +1863,12 @@ export async function responderChat(
         anexos.push(exec.anexo);
         emitir?.({ tipo: "anexo", anexo: exec.anexo });
       }
-      /* v3.74 (T057): saída maior que o teto NÃO é mais jogada fora. O texto inteiro vai
-         para arquivo na pasta da conta (onde o `rodar_python` roda, então o modelo relê o
-         trecho que precisar na rodada seguinte, pagando contexto só quando pede) e vira
-         anexo na conversa, para o dono baixar. No payload entram começo, fim e o caminho. */
-      let brutoTool = paraTexto(exec.saida);
-      const integral = textoSemCorte(exec.saida);
-      if (exec.ok && integral.length > MAX_TEXTO_MODELO) {
-        try {
-          const { despejarSaida } = await import("./sandbox");
-          const d = await despejarSaida(integral, user, exec.nome, {
-            /* sem `rodar_python` liberado na conta, o aviso não pode prometer releitura */
-            podeReler: ferramentaPermitida(tenant, user.operador, "rodar_python"),
-          });
-          despejos.push({ relativo: d.relativo, bytes: d.bytes, ferramenta: exec.nome });
-          anexos.push(d.anexo);
-          emitir?.({ tipo: "anexo", anexo: d.anexo });
-          rastro.push({
-            tipo: "guarda",
-            texto: `saída aparada: ${d.bytes} bytes gravados em \`${d.relativo}\``,
-            em: decorrido(antes),
-          });
-          emitir?.({ tipo: "guarda", texto: `saída aparada: o completo está em ${d.relativo}` });
-          brutoTool = d.referencia;
-          compactacao.despejadas++;
-        } catch (e) {
-          /* sem arquivo, volta ao corte antigo (cabeça) — melhor parcial do que turno quebrado */
-          log(`nexos: despejo de saída falhou (${exec.nome}): ${String((e as Error)?.message ?? e)}`);
-        }
-      }
+      /* v3.77 (T057 revogado): saída maior que o teto NÃO vira arquivo na pasta da conta.
+         O `apertarRodada` (compactar.ts) já cuida do payload TOTAL a cada rodada; aqui fica
+         só UM corte, na cabeça, com marcador honesto dizendo que falta cauda e como o modelo
+         busca o resto (recomeçar a consulta filtrada). Menos pasta, menos contador, menos
+         card: foi o caminho objetivo que o dono escolheu. */
+      let brutoTool = textoSemCorte(exec.saida);
       /* v3.74 (T056): segunda vez IDÊNTICA — executou (o estado da máquina pode ter mudado
          entre as chamadas) e o aviso volta DENTRO do resultado, na cara do modelo. */
       repetidas.set(chave, { n: vez, resumo });
@@ -1919,11 +1892,26 @@ export async function responderChat(
           }
         }
       }
+      /* v3.77: um corte só, na cabeça, com o marcador na cara do modelo (diz o tamanho real
+         e como buscar o resto) e uma linha na trilha para o dono ver que a cauda saiu. */
       const aparado =
         brutoTool.length > TETO_FERRAMENTA
-          ? `${brutoTool.slice(0, TETO_FERRAMENTA)}\n…(cortado por orçamento de contexto)`
+          ? `${brutoTool.slice(0, TETO_FERRAMENTA)}\n…(cortado por orçamento de contexto: a saída tinha ` +
+            `${brutoTool.length} caracteres; para ver o resto, refaça a consulta filtrada — tail, grep ou LIMIT)`
           : brutoTool;
-      if (brutoTool.length > TETO_FERRAMENTA) compactacao.aparadas++;
+      if (brutoTool.length > TETO_FERRAMENTA) {
+        compactacao.aparadas++;
+        /* v3.77: o MESMO texto no evento ao vivo e na trilha gravada — antes o ao vivo
+           dizia só "saída aparada em N caracteres", sem a ferramenta nem o tamanho original,
+           e a tela mostrava menos do que o histórico ao reabrir a conversa. */
+        const avisoGuarda = `saída de ${exec.nome} aparada em ${TETO_FERRAMENTA} caracteres (dos ${brutoTool.length})`;
+        rastro.push({
+          tipo: "guarda",
+          texto: avisoGuarda,
+          em: decorrido(antes),
+        });
+        emitir?.({ tipo: "guarda", texto: avisoGuarda });
+      }
       respondidas.add(String(c.id));
       /* o lembrete vem DEPOIS do corte: senão a ferramenta apertada comeria justamente ele */
       mensagens.push({ role: "tool", tool_call_id: c.id, content: aparado + lembrete });

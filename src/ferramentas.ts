@@ -52,9 +52,13 @@ export type ChamadaFerramenta = {
 };
 
 const SEPARADOR = "__";
-/** v3.74 (T057): exportado — é o limiar em que a saída de ferramenta vira ARQUIVO
- *  na pasta da conta (o corte seco era o que jogava a cauda fora sem apelo). */
-export const MAX_TEXTO_MODELO = 4000;
+/** v3.77: teto de texto de UMA saída de ferramenta no payload (20.000 chars ≈ 5.000 tokens).
+ *  Medido em produção: com 4000, saída banal perdia a cauda sem rastro (só `maquinas_online`
+ *  estoura em TODA chamada, ~5 KB) e o modelo gastava rodada para reler a própria lista.
+ *  Não há mais arquivo de despejo: acima deste número o `provider.ts` corta na cabeça e avisa
+ *  o modelo, na cara dele, para refazer a consulta filtrada. O payload TOTAL é guarda do
+ *  `apertarRodada` (compactar.ts). Referencia da casa (`dsh`): o gate la e `maxInlineTokens`. */
+export const MAX_TEXTO_MODELO = 20_000;
 const CAMPOS_SEGREDO = /(chave|senha|password|token|secret|api[_-]?key|authorization|cookie)/i;
 const CHAVE_SECRETA = /^(mr_|sk[-_]|pk[-_]|pat[-_]|ghp_|gsp_|xox|aqa_|ya29.)/i;
 /* token sem prefixo: 20+ caracteres de alfabeto de chave (letra/grande/dígito, pouca vogal) */
@@ -390,9 +394,9 @@ export async function executarFerramenta(
           saida: textoSemCorte({ ...(r as Record<string, unknown>), anexo: limpo }),
         };
       }
-      /* v3.74 (T057): SEM o corte de 4000 aqui. A camada do chat (`provider.ts`) decide o
-         que fazer com a saída grande: despeja em arquivo ou corta. Cortando aqui, o texto
-         integral nunca chega ao guarda e o despejo gravaria a própria mutilação. */
+      /* v3.77: SEM corte aqui. A camada do chat (`provider.ts`) é quem decide o que fazer com
+         a saída grande (corta na cabeça e avisa o modelo). Cortando aqui, o tamanho informado
+         ao modelo seria a própria mutilação. */
       return { servidor: "nexos", nome: rota.original, saida: textoSemCorte(r), ok: okDaSaida(r), ms: Date.now() - inicio, args: argsUsados };
     }
     const l = await linhaServidor(rota.servidor);
@@ -438,9 +442,9 @@ export async function executarFerramenta(
 
 /* ------------------------------------------------------- texto e segredo */
 
-/** texto da saída SEM o corte (v3.74 / T057): o que o modelo veria se não houvesse
- *  teto. A máscara de base64 é a mesma de `paraTexto` — arquivo grande nunca entra no
- *  payload de jeito nenhum, cortado ou despejado. */
+/** texto da saída SEM o corte: o que o modelo veria se não houvesse teto. É o que o
+ *  caminho do chat entrega ao guarda de orçamento. A máscara de base64 é a mesma de
+ *  `paraTexto` — arquivo grande nunca entra no payload. */
 export function textoSemCorte(valor: unknown): string {
   let texto = typeof valor === "string" ? valor : JSON.stringify(valor ?? null);
   texto = texto.replace(/"([A-Za-z0-9+/=]{240,})"/g, '":[arquivo em base64: $1 caracteres, não mostrei]"');
@@ -448,7 +452,9 @@ export function textoSemCorte(valor: unknown): string {
 }
 
 /** JSON -> texto para o modelo, cortando o que afoga o contexto (base64, log grande).
- *  No caminho do chat este corte só vale quando o despejo em arquivo falhou (v3.74). */
+ *  v3.77: SEM caller no produto — o chat corta no `provider.ts` (mesmo número, com aviso
+ *  na cara do modelo) e o MCP direto entrega o texto inteiro. Fica como régua do contrato
+ *  de unidade (`tests/guarda.test.ts`) e para quem precisar de um corte seco fora do chat. */
 export function paraTexto(valor: unknown): string {
   let texto = textoSemCorte(valor);
   if (texto.length > MAX_TEXTO_MODELO) texto = texto.slice(0, MAX_TEXTO_MODELO) + `\n… [cortado: ${texto.length} caracteres]`;
