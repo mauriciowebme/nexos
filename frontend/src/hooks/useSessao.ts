@@ -46,15 +46,17 @@ export function useSessao() {
   }, []);
 
   const entrar = useCallback(
-    async (nome: string, chave: string): Promise<void> => {
-      if (!nome || !chave) {
-        setErro("preencha nome e segredo");
+    /** v3.78: entra SÓ com a chave — quem eu sou vem do servidor (`/gavetas` devolve `nome`). */
+    async (chave: string): Promise<void> => {
+      if (!chave) {
+        setErro("informe a chave de acesso");
         return;
       }
       definirChave(chave);
       try {
         const g = await get<GavetasResp>("/gavetas");
         setErro("");
+        const nome = g.nome || "";
         guardar({ nome, chave, operador: !!g.operador, tenant: nome, memoria: "" });
       } catch (e) {
         setErro((e as Error).message);
@@ -74,7 +76,10 @@ export function useSessao() {
     }
     try {
       const g = await get<GavetasResp>("/gavetas");
-      setSessao({ ...s, operador: !!g.operador, tenant: s.tenant || s.nome });
+      /* v3.78: o nome verdadeiro vem do servidor; o tenant já escolhido na aba (operador
+         navegando numa conta) continua valendo. */
+      const nome = g.nome || s.nome;
+      setSessao({ ...s, nome, operador: !!g.operador, tenant: s.tenant || nome });
       setRestaurando(false);
     } catch {
       sessionStorage.clear();

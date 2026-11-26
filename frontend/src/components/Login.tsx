@@ -2,7 +2,6 @@ import { useState, type FormEvent } from "react";
 import type { SessaoApi } from "../hooks/useSessao";
 
 export function Login({ sessao }: { sessao: SessaoApi }) {
-  const [nome, setNome] = useState("");
   const [chave, setChave] = useState("");
   const [ver, setVer] = useState(false);
   const [indo, setIndo] = useState(false);
@@ -11,7 +10,7 @@ export function Login({ sessao }: { sessao: SessaoApi }) {
     ev.preventDefault();
     setIndo(true);
     try {
-      await sessao.entrar(nome.trim(), chave.trim());
+      await sessao.entrar(chave.trim());
     } catch {
       /* a mensagem já está em sessao.erro */
     } finally {
@@ -24,24 +23,11 @@ export function Login({ sessao }: { sessao: SessaoApi }) {
       <div className="mb-2 text-[13px] font-semibold text-verde">◆ Nexos</div>
       <h1 className="mb-2">Entrar</h1>
       <p className="dica">
-        Chave de tenant vê só as gavetas dela. Chave <b>operador</b> vê todas.
+        A chave identifica a conta. Chave de tenant vê só as gavetas dela; chave <b>operador</b> vê todas.
       </p>
 
       <label className="rotulo">
-        Nome da chave
-        <input
-          id="loginNome"
-          className="campo mt-[5px]"
-          autoComplete="username"
-          placeholder="ex.: ia-go ou operador"
-          autoFocus
-          value={nome}
-          onChange={(e) => setNome(e.target.value)}
-        />
-      </label>
-
-      <label className="rotulo">
-        Segredo
+        Chave de acesso
         <span className="relative mt-[5px] block">
           <input
             id="loginKey"
@@ -49,6 +35,7 @@ export function Login({ sessao }: { sessao: SessaoApi }) {
             type={ver ? "text" : "password"}
             autoComplete="current-password"
             placeholder="a chave do serviço"
+            autoFocus
             value={chave}
             onChange={(e) => setChave(e.target.value)}
           />

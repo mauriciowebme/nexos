@@ -15,6 +15,8 @@ export type Gaveta = {
 };
 export type GavetasResp = {
   operador: boolean;
+  /** v3.78: nome real da conta, vindo do servidor (tenant da chave) — não é o que o usuário digitou. */
+  nome: string;
   usuarios: string[];
   gavetas: Gaveta[];
   documentos_fonte: number;
