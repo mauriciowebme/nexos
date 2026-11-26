@@ -79,6 +79,10 @@ export function Gavetas({ operador, tenant, usuario, onAbrirUsuario, onVoltar, o
      botão em duas fases (primeiro clique arma, segundo confirma) e rótulo do prazo. */
   const [contas, setContas] = useState<Record<string, UsuarioItem>>({});
   const [confirmarApagar, setConfirmarApagar] = useState<string | null>(null);
+  /* v3.80 (dono, 26/11): trocar a chave de um usuário pela própria lista — a antiga morre
+     na hora e a nova aparece UMA vez (o botão pede confirmação em duas fases). */
+  const [confirmarChave, setConfirmarChave] = useState<string | null>(null);
+  const [chaveTrocada, setChaveTrocada] = useState<{ nome: string; chave: string } | null>(null);
   /* v3.18 (T021): buscar DENTRO do histórico de conversas (texto das mensagens) */
   const [termoBusca, setTermoBusca] = useState("");
   const [achados, setAchados] = useState<{ id: number; memoria: string; papel: string; trecho: string; quando: string }[] | null>(null);
@@ -152,6 +156,17 @@ export function Gavetas({ operador, tenant, usuario, onAbrirUsuario, onVoltar, o
       await carregar();
     } catch (e) {
       toast("apagar: " + (e as Error).message, "erro");
+    }
+  }
+
+  /** v3.80: chave nova para um usuário que já existe (POST /usuarios/:nome/chave). */
+  async function trocarChaveConta(nome: string) {
+    try {
+      const r = await post<{ nome: string; chave: string }>(`/usuarios/${encodeURIComponent(nome)}/chave`);
+      setChaveTrocada({ nome: r.nome ?? nome, chave: r.chave });
+      toast(`chave de ${r.nome ?? nome} trocada — a anterior não entra mais`, "sucesso");
+    } catch (e) {
+      toast("chave: " + (e as Error).message, "erro");
     }
   }
 
@@ -418,6 +433,23 @@ export function Gavetas({ operador, tenant, usuario, onAbrirUsuario, onVoltar, o
                       ⏳ some em {new Date(String(contas[t]?.agendado_exclusao_em)).toLocaleDateString("pt-BR")} — recriar desfaz
                     </span>
                   ) : (
+                    <>
+                    <button
+                      id={`btnChaveUsuario-${slug(t)}`}
+                      className="btn btn-mini btn-sutil"
+                      title="gera uma chave nova e invalida a atual na hora"
+                      onClick={() => {
+                        setConfirmarApagar(null);
+                        if (confirmarChave !== t) {
+                          setConfirmarChave(t);
+                          return;
+                        }
+                        setConfirmarChave(null);
+                        void trocarChaveConta(t);
+                      }}
+                    >
+                      {confirmarChave === t ? "trocar a chave?" : "gerar chave nova"}
+                    </button>
                     <button
                       id={`btnApagarUsuario-${slug(t)}`}
                       className={"btn btn-mini btn-sutil" + (confirmarApagar === t ? " btn-perigo" : "")}
@@ -432,6 +464,7 @@ export function Gavetas({ operador, tenant, usuario, onAbrirUsuario, onVoltar, o
                     >
                       {confirmarApagar === t ? "apagar de verdade?" : "apagar"}
                     </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -444,6 +477,37 @@ export function Gavetas({ operador, tenant, usuario, onAbrirUsuario, onVoltar, o
             </div>
           )}
         </div>
+
+        {chaveTrocada && (
+          <div className="veu" role="dialog" aria-modal="true" aria-label="chave nova" onClick={() => setChaveTrocada(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h3>◆ Chave nova</h3>
+              <div className="flex flex-col gap-3 p-4">
+                <p className="m-0 text-[13px] text-txt2">
+                  Entregue esta chave para <b>{chaveTrocada.nome}</b>. A chave anterior <b>parou de funcionar</b> agora.
+                </p>
+                <div className="mono select-all break-all rounded-lg border border-borda bg-sup2 p-2 text-[13px]" id="chaveNova">
+                  {chaveTrocada.chave}
+                </div>
+                <p className="m-0 text-[12px] text-txt3">ela não aparece de novo — se perder, gere outra por aqui.</p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(chaveTrocada.chave);
+                      toast("chave copiada", "sucesso");
+                    }}
+                  >
+                    copiar
+                  </button>
+                  <button className="btn btn-primario" onClick={() => setChaveTrocada(null)}>
+                    fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {modalUsuario && (
           <div className="veu" role="dialog" aria-modal="true" aria-label="novo usuário" onClick={() => setModalUsuario(false)}>
