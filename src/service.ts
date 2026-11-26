@@ -253,6 +253,9 @@ export async function listGavetas(user: Usuario, tenantArg?: string) {
 
   return {
     operador: isOperador(user),
+    /* v3.78: nome real da conta (o tenant da CHAVE) — o painel deixa de usar o
+       nome digitado no login; era ele que virava `?tenant=` e esvaziava a tela. */
+    nome: user.tenant,
     usuarios,
     gavetas: [...mapa.values()]
       .filter((g) => usuarios.includes(g.tenant))
