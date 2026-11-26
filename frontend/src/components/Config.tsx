@@ -130,7 +130,7 @@ function Provider({ operador }: { operador: boolean }) {
         tipo: novo.tipo,
         base_url: novo.base_url.trim(),
         modelo: novo.modelo.trim(),
-        /* "conta do operador" = escopo global; desmarcado = mantém o escopo original da linha.
+        /* "conta do administrador" = escopo global; desmarcado = mantém o escopo original da linha.
            v3.60: quem vê é o `publico`, não o escopo. */
         tenant: novo.paraTodos ? "global" : novo.escopoOrig,
         publico: novo.publico,
@@ -290,7 +290,7 @@ function Provider({ operador }: { operador: boolean }) {
                 <b className="mono">{pr.nome}</b>
                 <span className="sub2 block">
                   {pr.publico ? "público — todo mundo vê" : "privado — só quem é desta conta"} ·{" "}
-                  {pr.escopo === "*" ? "conta do operador" : `escopo: ${pr.escopo}`}
+                  {pr.escopo === "*" ? "conta do administrador" : `escopo: ${pr.escopo}`}
                 </span>
               </td>
               <td className="mono break-all" data-rot="serviço">
@@ -427,7 +427,7 @@ function Provider({ operador }: { operador: boolean }) {
           <label className="check">
             <input id="provGlobal" type="checkbox" checked={novo.paraTodos}
               onChange={(e) => setNovo({ ...novo, paraTodos: e.target.checked })} />
-            pertence à conta do operador (global) — desmarcado, fica no escopo desta conta
+            pertence à conta do administrador (global) — desmarcado, fica no escopo desta conta
           </label>
           <label className="check">
             <input id="provPublico" type="checkbox" checked={novo.publico}
@@ -782,7 +782,7 @@ function Ferramentas({ operador, tenant, onControleMaquinas }: { operador: boole
     try {
       const r = await patch<{ usuarios_habilitado: boolean }>("/config/mcp/usuarios", { ativo: valor });
       setMcpUsuarios(r.usuarios_habilitado);
-      toast(valor ? "contas liberadas para usar o MCP" : "MCP restrito ao operador", "sucesso");
+      toast(valor ? "contas liberadas para usar o MCP" : "MCP restrito ao administrador", "sucesso");
     } catch (e) {
       toast("MCP para contas: " + (e as Error).message, "erro");
     } finally {
@@ -893,7 +893,7 @@ function Ferramentas({ operador, tenant, onControleMaquinas }: { operador: boole
         <p className="dica mt-0 mb-3">
           ligado, o chat e as ferramentas MCP podem executar comandos nas máquinas cadastradas (aba Máquinas). Desligado,{' '}
           <b>ninguém executa</b>: chat, servidores MCP externos e a rota REST são barrados — as máquinas continuam online,
-          a listagem e o histórico de execuções ficam preservados. {operador ? "" : "Só o operador liga e desliga."}
+          a listagem e o histórico de execuções ficam preservados. {operador ? "" : "Só o administrador liga e desliga."}
         </p>
         <label className="check">
           <input
@@ -919,8 +919,8 @@ function Ferramentas({ operador, tenant, onControleMaquinas }: { operador: boole
         <h2 className="mb-1 text-[13px] font-semibold text-txt2">Usar o nexos como servidor MCP</h2>
         <p className="dica mt-0 mb-3">
           ligado, cada conta pode apontar o agente dela para o endereço MCP do nexos (aba <b>MCP</b> do menu) e
-          escolher, na tela, quais ferramentas quer liberar. As ferramentas de operador continuam só do operador, e
-          ferramenta nova nasce liberada. Desligado, <b>só o operador</b> usa o MCP. {operador ? "" : "Só o operador liga e desliga."}
+          escolher, na tela, quais ferramentas quer liberar. As ferramentas de administrador continuam só do administrador, e
+          ferramenta nova nasce liberada. Desligado, <b>só o administrador</b> usa o MCP. {operador ? "" : "Só o administrador liga e desliga."}
         </p>
         <label className="check">
           <input
@@ -943,7 +943,7 @@ function Ferramentas({ operador, tenant, onControleMaquinas }: { operador: boole
         <h2 className="mb-1 text-[13px] font-semibold text-txt2">Servidores MCP externos</h2>
         <p className="dica mt-0 mb-3">
           cada servidor empresta as ferramentas dele ao chat, pelo endereço HTTP (protocolo MCP). O cabeçalho de acesso fica
-          guardado no servidor e nunca volta em claro. {operador ? "" : "Só o operador cadastra."}
+          guardado no servidor e nunca volta em claro. {operador ? "" : "Só o administrador cadastra."}
         </p>
         <table className="tabela" id="listaMcp">
           <thead>
@@ -1092,7 +1092,7 @@ function Conta({ nome, operador, onChaveNova }: { nome: string; operador: boolea
         </div>
         <div className="it-linha">
           <span className="sub2">papel</span>
-          <span>{operador ? "admin (vê tudo)" : "usuário"}</span>
+          <span>{operador ? "administrador (vê todas as contas)" : "usuário"}</span>
         </div>
         <div className="it-linha">
           <span className="sub2">chave</span>

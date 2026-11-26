@@ -497,7 +497,7 @@ export function Gavetas({ operador, tenant, usuario, onAbrirUsuario, onVoltar, o
                         onChange={(e) => setNovoUsuarioPapel(e.target.value as "usuario" | "operador")}
                       >
                         <option value="usuario">usuário</option>
-                        <option value="operador">admin (vê tudo)</option>
+                        <option value="operador">administrador (vê todas as contas)</option>
                       </select>
                     </label>
                     <div className="aviso">

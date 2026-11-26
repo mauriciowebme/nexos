@@ -23,7 +23,7 @@ export function Login({ sessao }: { sessao: SessaoApi }) {
       <div className="mb-2 text-[13px] font-semibold text-verde">◆ Nexos</div>
       <h1 className="mb-2">Entrar</h1>
       <p className="dica">
-        A chave identifica a conta. Chave de tenant vê só as gavetas dela; chave <b>operador</b> vê todas.
+        A chave identifica a conta. Chave de usuário vê só as gavetas dela; chave de <b>administrador</b> vê todas as contas.
       </p>
 
       <label className="rotulo">

@@ -368,7 +368,7 @@ export default function App() {
           </div>
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold">{nome}</div>
-            <div className="text-[11px] text-txt3">{operador ? "vê tudo · admin" : "usuário"}</div>
+            <div className="text-[11px] text-txt3">{operador ? "administrador" : "usuário"}</div>
             {/* v3.14.1 — no celular o chat ocupa a tela toda e o chip de foco saiu do topo:
                 o usuário em foco passa a viver aqui dentro do menu */}
             {operador && tenant && (
@@ -496,7 +496,7 @@ export default function App() {
             />
           )}
 
-          {vista === "maquinas" && <Maquinas operador={operador} />}
+          {vista === "maquinas" && <Maquinas />}
           {vista === "mcp" && <Mcp versao={versao} />}
           {vista === "config" && (
             <Config

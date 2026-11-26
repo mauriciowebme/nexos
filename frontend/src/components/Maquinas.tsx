@@ -16,7 +16,7 @@ function minutesAgo(iso: string | null): string {
   return Math.floor(s / 86400) + "d";
 }
 
-export function Maquinas({ operador }: { operador: boolean }) {
+export function Maquinas() {
   const { toast } = useToast();
   const [maquinas, setMaquinas] = useState<MaquinaLinha[]>([]);
   const [log, setLog] = useState<MaquinasLogLinha[]>([]);
@@ -86,7 +86,7 @@ export function Maquinas({ operador }: { operador: boolean }) {
 
   async function ativar(m: MaquinaLinha, ativo: boolean) {
     try {
-      await patch(`/maquinas/${encodeURIComponent(m.host)}?tenant=${encodeURIComponent(m.tenant)}`, { ativo });
+      await patch(`/maquinas/${encodeURIComponent(m.host)}`, { ativo });
       toast(`${m.host} ${ativo ? "reativada" : "desativada"}`, "sucesso");
       carregar();
     } catch (e) {
@@ -97,7 +97,7 @@ export function Maquinas({ operador }: { operador: boolean }) {
   async function apagar(m: MaquinaLinha) {
     if (!window.confirm(`apagar a máquina ${m.host}? o cliente dela precisa ser re-pareado.`)) return;
     try {
-      await del(`/maquinas/${encodeURIComponent(m.host)}?tenant=${encodeURIComponent(m.tenant)}`);
+      await del(`/maquinas/${encodeURIComponent(m.host)}`);
       toast(`${m.host} removida`, "sucesso");
       carregar();
     } catch (e) {
@@ -110,7 +110,7 @@ export function Maquinas({ operador }: { operador: boolean }) {
       <div className="barra">
         <div>
           <h1>Máquinas</h1>
-          <div className="mt-1 text-[12.8px] text-txt3">{operador ? "todas as máquinas (admin)" : "as suas máquinas"}</div>
+          <div className="mt-1 text-[12.8px] text-txt3">as suas máquinas</div>
         </div>
       </div>
 
@@ -149,7 +149,6 @@ export function Maquinas({ operador }: { operador: boolean }) {
         <thead>
           <tr>
             <th>máquina</th>
-            {operador && <th>donos</th>}
             <th>sistema</th>
             <th className="num">estado</th>
             <th className="num">atividade</th>
@@ -159,7 +158,7 @@ export function Maquinas({ operador }: { operador: boolean }) {
         <tbody>
           {maquinas.length === 0 && (
             <tr>
-              <td colSpan={operador ? 6 : 5} className="py-3 text-center text-txt3">
+              <td colSpan={5} className="py-3 text-center text-txt3">
                 nenhuma máquina ainda — gere um token e rode o cliente nela
               </td>
             </tr>
@@ -170,11 +169,6 @@ export function Maquinas({ operador }: { operador: boolean }) {
                 <div className="font-medium">{m.host}</div>
                 {m.nome && m.nome !== m.host && <div className="text-[11px] text-txt3">{m.nome}</div>}
               </td>
-              {operador && (
-                <td data-rot="donos">
-                  <span className="chip">{m.tenant}</span>
-                </td>
-              )}
               <td data-rot="sistema">
                 <div>{m.so || "—"}</div>
                 {m.usuario_win ? <div className="text-[11px] text-txt3">{m.usuario_win}</div> : null}
@@ -246,8 +240,7 @@ export function Maquinas({ operador }: { operador: boolean }) {
             <thead>
               <tr>
                 <th>quando</th>
-                {operador && <th>donos</th>}
-                <th>máquina</th>
+                    <th>máquina</th>
                 <th>comando</th>
                 <th className="num">exit</th>
                 <th className="num">ms</th>
@@ -258,7 +251,6 @@ export function Maquinas({ operador }: { operador: boolean }) {
               {log.map((l, i) => (
                 <tr key={i}>
                   <td className="whitespace-nowrap text-[11px]">{new Date(l.criado_em).toLocaleString("pt-BR")}</td>
-                  {operador && <td>{l.tenant}</td>}
                   <td>{l.host}</td>
                   <td className="max-w-[340px] truncate font-mono text-[11px]" title={(l.stdout || "") + (l.stderr ? "\n— stderr: " + l.stderr : "")}>
                     {l.cmd}

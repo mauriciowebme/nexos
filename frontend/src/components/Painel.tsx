@@ -51,7 +51,7 @@ export function Painel({ tenant, operador }: { tenant: string; operador: boolean
         <div className="kpi">
           <div className="kpi-rot">usuários</div>
           <div className="kpi-val">{n.usuarios}</div>
-          <div className="kpi-pe">{n.operadores === 1 ? "1 operador" : `${n.operadores} operadores`}</div>
+          <div className="kpi-pe">{n.operadores === 1 ? "1 administrador" : `${n.operadores} administradores`}</div>
         </div>
         <div className="kpi">
           <div className="kpi-rot">gavetas</div>
