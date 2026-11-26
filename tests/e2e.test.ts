@@ -270,6 +270,13 @@ test("nexos v2 — suíte completa", async (t) => {
       Array.isArray(gop.json?.usuarios) && !gop.json.usuarios.includes("operador"),
       gop.json?.usuarios,
     );
+    /* v3.78 (dono, 26/11): o login deixou de pedir o nome — quem é a conta vem do
+       servidor aqui; era o nome DIGITADO que virava `?tenant=` e esvaziava a tela. */
+    f.check(
+      "gavetas dizem o nome real da conta (v3.78)",
+      g.json?.nome === "teste" && gop.json?.nome === "op",
+      { comum: g.json?.nome, operador: gop.json?.nome },
+    );
     f.check(
       "todo usuario tem a gaveta padrao no mapa",
       (gop.json?.usuarios ?? []).every((t: string) =>
