@@ -23,6 +23,7 @@ import {
   type ChamadaFerramenta,
   executarFerramenta,
   mascararArgs,
+  mascararTexto,
   MAX_TEXTO_MODELO,
   pacoteDeFerramentas,
   resumirSaida,
@@ -2007,10 +2008,13 @@ async function gravarMensagens(
     `INSERT INTO chat_mensagens (tenant, memoria, papel, texto, ferramentas, anexos) VALUES ($1, $2, 'user', $3, NULL, $4::jsonb)`,
     [tenant, memoria, pergunta, JSON.stringify(anexosDoUsuario)],
   );
+  /* v3.79 (dono, 26/11): a chave de um usuário novo aparece UMA vez na tela e NÃO fica
+     gravada no histórico — o que vai para o banco é a versão mascarada (`••••XJJq`). */
+  const respostaGravada = mascararTexto(resposta);
   await q(
     `INSERT INTO chat_mensagens (tenant, memoria, papel, texto, ferramentas, falas, raciocinio, rastro, fontes, custo, provedor, modelo, telas, anexos) VALUES ($1, $2, 'assistant', $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12::jsonb, $13::jsonb)`,
     [
-      tenant, memoria, resposta, JSON.stringify(chamadas), JSON.stringify(falas), raciocinio || null,
+      tenant, memoria, respostaGravada, JSON.stringify(chamadas), JSON.stringify(falas), raciocinio || null,
       JSON.stringify(rastro), JSON.stringify(fontes),
       /* v3.18 (T018): tok_out medido pela mesma régua do orçamento; tok_in fica por conta de quem
          chamou (a resposta pode ser parcial) — gravamos só o que temos aqui. */

@@ -200,7 +200,7 @@ export const TOOLS: Tool[] = [
         memoria: { type: "string", description: "gaveta dentro do login (default '')" },
         doc_id: { type: "string", description: "id do doc; vazio = derivado do nome do arquivo" },
         title: { type: "string" },
-        tenant: { type: "string", description: "alvo do operador; ignorado para login comum" },
+        tenant: { type: "string", description: "alvo do administrador; ignorado para login comum" },
       },
       required: ["nome", "conteudo_base64"],
     },
@@ -214,7 +214,7 @@ export const TOOLS: Tool[] = [
       properties: {
         doc_id: { type: "string" },
         memoria: { type: "string", description: "gaveta dentro do login (default '')" },
-        tenant: { type: "string", description: "alvo do operador; ignorado para login comum" },
+        tenant: { type: "string", description: "alvo do administrador; ignorado para login comum" },
       },
       required: ["doc_id"],
     },
@@ -230,7 +230,7 @@ export const TOOLS: Tool[] = [
         content: { type: "string", description: "texto novo (max 500000 chars)" },
         title: { type: "string" },
         memoria: { type: "string", description: "gaveta dentro do login (default '')" },
-        tenant: { type: "string", description: "alvo do operador; ignorado para login comum" },
+        tenant: { type: "string", description: "alvo do administrador; ignorado para login comum" },
       },
       required: ["doc_id", "content"],
     },
@@ -247,7 +247,7 @@ export const TOOLS: Tool[] = [
         title: { type: "string" },
         destino_memoria: { type: "string", description: "gaveta de destino (default: a mesma)" },
         memoria: { type: "string", description: "gaveta atual (default '')" },
-        tenant: { type: "string", description: "alvo do operador; ignorado para login comum" },
+        tenant: { type: "string", description: "alvo do administrador; ignorado para login comum" },
       },
       required: ["doc_id"],
     },
@@ -261,7 +261,7 @@ export const TOOLS: Tool[] = [
         doc_id: { type: "string" },
         arquivado: { type: "boolean", description: "true arquiva, false revive" },
         memoria: { type: "string", description: "gaveta dentro do login (default '')" },
-        tenant: { type: "string", description: "alvo do operador; ignorado para login comum" },
+        tenant: { type: "string", description: "alvo do administrador; ignorado para login comum" },
       },
       required: ["doc_id", "arquivado"],
     },
@@ -284,7 +284,7 @@ export const TOOLS: Tool[] = [
       type: "object",
       properties: {
         memoria: { type: "string", description: "nome da gaveta" },
-        tenant: { type: "string", description: "dono (so operador; comum cria na propria)" },
+        tenant: { type: "string", description: "dono (so administrador; comum cria na propria)" },
       },
       required: ["memoria"],
     },
@@ -296,7 +296,7 @@ export const TOOLS: Tool[] = [
       type: "object",
       properties: {
         memoria: { type: "string" },
-        tenant: { type: "string", description: "dono (obrigatorio quando o operador apaga gaveta alheia)" },
+        tenant: { type: "string", description: "dono (obrigatorio quando o administrador apaga gaveta alheia)" },
       },
       required: ["memoria"],
     },
@@ -361,18 +361,20 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "listar_usuarios",
-    description: "Lista os usuarios do servidor (nome, papel, ativo, documentos). Somente operador.",
+    description: "Lista os usuarios do servidor (nome, papel, ativo, documentos). Somente administrador.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "criar_usuario",
     description:
-      "Cria um usuario e devolve a chave em claro UMA UNICA VEZ (guarde na hora). Somente operador.",
+      "Cria um usuario COMUM (papel usuario) e devolve a chave em claro UMA UNICA VEZ (guarde na hora). " +
+      "Somente administrador. Conta de ADMINISTRADOR nao nasce por aqui: so pela tela Gavetas > novo usuario, " +
+      "onde o papel e escolhido de forma explicita. Crie EXATAMENTE o nome informado pelo dono — nunca corrija, " +
+      "encurte ou invente: se a regra recusar o nome, liste opcoes e espere a escolha.",
     inputSchema: {
       type: "object",
       properties: {
-        nome: { type: "string", description: "2-32 chars: letras sem acento, numeros, . _ -" },
-        papel: { type: "string", enum: ["usuario", "operador"] },
+        nome: { type: "string", description: "2-32 chars: letras sem acento, numeros, . _ - (o nome DITO pelo dono, sem invencao)" },
       },
       required: ["nome"],
     },
@@ -380,7 +382,7 @@ export const TOOLS: Tool[] = [
   {
     name: "apagar_usuario",
     description:
-      "Agenda a exclusao de um usuario: login desliga na hora, os dados dele somem depois da carencia configuravel (default 30 dias). Recriar o nome dentro da janela desfaz. Somente operador.",
+      "Agenda a exclusao de um usuario: login desliga na hora, os dados dele somem depois da carencia configuravel (default 30 dias). Recriar o nome dentro da janela desfaz. Somente administrador.",
     inputSchema: {
       type: "object",
       properties: { nome: { type: "string" } },
@@ -390,7 +392,7 @@ export const TOOLS: Tool[] = [
   {
     name: "esquecimento",
     description:
-      "Numeros do esquecimento (dias_arquivar, dias_excluir_arquivado, dias_carencia). acao=ver | definir. Somente operador.",
+      "Numeros do esquecimento (dias_arquivar, dias_excluir_arquivado, dias_carencia). acao=ver | definir. Somente administrador.",
     inputSchema: {
       type: "object",
       properties: {
@@ -433,7 +435,7 @@ export const TOOLS: Tool[] = [
   {
     name: "gerir_mcp",
     description:
-      "Cuida dos servidores MCP do chat. acao=criar | atualizar | apagar | testar (testar lista as ferramentas). Somente operador.",
+      "Cuida dos servidores MCP do chat. acao=criar | atualizar | apagar | testar (testar lista as ferramentas). Somente administrador.",
     inputSchema: {
       type: "object",
       properties: {
@@ -466,7 +468,6 @@ export const TOOLS: Tool[] = [
       type: "object",
       properties: {
         nome: { type: "string", description: "apelido da maquina (letras, numeros, - . _)" },
-        tenant: { type: "string", description: "so operador: para quem sera a maquina" },
       },
       required: ["nome"],
     },
@@ -477,7 +478,6 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        tenant: { type: "string", description: "so operador: mira outro usuario; sem tenant o operador ve todas" },
       },
     },
   },
@@ -492,7 +492,6 @@ export const TOOLS: Tool[] = [
         cmd: { type: "string", description: "comando de shell (ate 4000 chars)" },
         timeout: { type: "integer", description: "segundos aguardando; default 30, max 900 (15 min)" },
         background: { type: "boolean", description: "true = inicia e devolve o PID na hora; o processo sobrevive ao fim da chamada (servidor, modelo, build). Sem timeout e sem stdout de volta." },
-        tenant: { type: "string", description: "so operador: dono da maquina" },
         sessao: { type: "string", description: "nome de sessao aberta (tool sessao) — roda dentro daquela pasta" },
         env: { type: "object", description: "variaveis SO nesta execucao ({NOME: valor}); nao persistem" },
       },
@@ -507,7 +506,7 @@ export const TOOLS: Tool[] = [
       host: { type: "string" },
       caminho: { type: "string", description: "diretorio, ex.: C:\\\\DAM ou /opt" },
       padrao: { type: "string", description: "filtro de nome (padrao *)" },
-      tenant: { type: "string", description: "so operador: dono da maquina" } }, required: ["host", "caminho"] },
+      }, required: ["host", "caminho"] },
   },
   {
     name: "ler_arquivo",
@@ -518,7 +517,7 @@ export const TOOLS: Tool[] = [
       offset: { type: "integer", description: "byte inicial (padrao 0)" },
       limite: { type: "integer", description: "max bytes (padrao 200000, max 800000)" },
       binario: { type: "boolean", description: "true = devolver base64 cru" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "caminho"] },
+      }, required: ["host", "caminho"] },
   },
   {
     name: "escrever_arquivo",
@@ -529,7 +528,7 @@ export const TOOLS: Tool[] = [
       conteudo: { type: "string", description: "texto cru utf-8" },
       conteudo_base64: { type: "string", description: "bytes em base64" },
       append: { type: "boolean" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "caminho"] },
+      }, required: ["host", "caminho"] },
   },
   {
     name: "capturar_tela",
@@ -537,7 +536,7 @@ export const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {
       host: { type: "string" },
       tela: { type: "integer", description: "monitor (1 = principal; padrao 1)" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host"] },
+      }, required: ["host"] },
   },
   {
     name: "baixar_arquivo",
@@ -547,7 +546,7 @@ export const TOOLS: Tool[] = [
       caminho: { type: "string" },
       nome: { type: "string", description: "nome mostrado (padrao = nome do arquivo)" },
       mime: { type: "string", description: "opcional; inferido pela extensao" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "caminho"] },
+      }, required: ["host", "caminho"] },
   },
   {
     name: "copiar_arquivo",
@@ -557,7 +556,7 @@ export const TOOLS: Tool[] = [
       origem: { type: "string", description: "caminho na origem" },
       host_destino: { type: "string", description: "maquina de DESTINO" },
       destino: { type: "string", description: "caminho no destino (padrao = mesmo da origem)" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "origem", "host_destino"] },
+      }, required: ["host", "origem", "host_destino"] },
   },
   {
     name: "enviar_para_maquina",
@@ -567,7 +566,7 @@ export const TOOLS: Tool[] = [
       anexo_id: { type: "string", description: "id do anexo (veio de baixar_arquivo ou do upload do navegador)" },
       destino: { type: "string", description: "caminho completo no destino (padrao: Downloads/<nome>)" },
       conferir: { type: "boolean", description: "confere sha256 no destino (padrao true)" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "anexo_id"] },
+      }, required: ["host", "anexo_id"] },
   },
   {
     name: "buscar_arquivos",
@@ -578,7 +577,7 @@ export const TOOLS: Tool[] = [
       nome: { type: "string", description: "glob de nome (ex.: *.log)" },
       conteudo: { type: "string", description: "texto fixo dentro dos arquivos" },
       max_resultados: { type: "integer", description: "padrao 200, max 1000" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "raiz"] },
+      }, required: ["host", "raiz"] },
   },
   {
     name: "grep_remoto",
@@ -592,7 +591,7 @@ export const TOOLS: Tool[] = [
       regex: { type: "boolean" },
       ignore_case: { type: "boolean", description: "padrao true" },
       max_resultados: { type: "integer", description: "padrao 100, max 1000" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "raiz", "padrao"] },
+      }, required: ["host", "raiz", "padrao"] },
   },
   {
     name: "editar_no_local",
@@ -604,14 +603,14 @@ export const TOOLS: Tool[] = [
       substituicao: { type: "string", description: "texto novo (vazio = apagar)" },
       replace_all: { type: "boolean" },
       seca: { type: "boolean", description: "so mostra, nao grava" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "caminho", "busca", "substituicao"] },
+      }, required: ["host", "caminho", "busca", "substituicao"] },
   },
   {
     name: "estado_maquina",
     description: "Diagnostico num disparo: SO, uptime, RAM, CPU%, disco por unidade (Linux: load). Antes de culpar a ferramenta por escrita falha, veja o disco.",
     inputSchema: { type: "object", properties: {
       host: { type: "string" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host"] },
+      }, required: ["host"] },
   },
   {
     name: "processos",
@@ -623,14 +622,14 @@ export const TOOLS: Tool[] = [
       pid: { type: "integer", description: "para matar: PID exato (alternativa a nome/porta)" },
       porta: { type: "integer", description: "para matar: quem estiver escutando nesta porta TCP" },
       top: { type: "integer", description: "padrao 15, max 100" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "acao"] },
+      }, required: ["host", "acao"] },
   },
   {
     name: "metricas",
     description: "Retrato completo da maquina em UM comando: CPU%, RAM usada/total, uptime, disco por unidade, top 5 processos por memoria e GPU (VRAM, uso e temperatura quando houver nvidia-smi). Use no lugar de estado_maquina + processos + nvidia-smi.",
     inputSchema: { type: "object", properties: {
       host: { type: "string" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host"] },
+      }, required: ["host"] },
   },
   {
     name: "janelas",
@@ -639,7 +638,7 @@ export const TOOLS: Tool[] = [
       host: { type: "string" },
       acao: { type: "string", enum: ["listar", "focar"] },
       titulo: { type: "string", description: "para focar: substring do titulo" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "acao"] },
+      }, required: ["host", "acao"] },
   },
   {
     name: "area_transferencia",
@@ -648,7 +647,7 @@ export const TOOLS: Tool[] = [
       host: { type: "string" },
       acao: { type: "string", enum: ["get", "set"] },
       texto: { type: "string", description: "para set" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "acao"] },
+      }, required: ["host", "acao"] },
   },
   {
     name: "falar",
@@ -656,7 +655,7 @@ export const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {
       host: { type: "string" },
       texto: { type: "string" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "texto"] },
+      }, required: ["host", "texto"] },
   },
   {
     name: "abrir",
@@ -664,7 +663,7 @@ export const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {
       host: { type: "string" },
       alvo: { type: "string", description: "URL, pasta ou exe" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "alvo"] },
+      }, required: ["host", "alvo"] },
   },
   {
     name: "servicos",
@@ -675,7 +674,7 @@ export const TOOLS: Tool[] = [
       nome: { type: "string" },
       filtro: { type: "string", description: "para listar: glob (padrao *)" },
       max_resultados: { type: "integer", description: "padrao 30, max 200" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "acao"] },
+      }, required: ["host", "acao"] },
   },
   {
     name: "eventos",
@@ -685,7 +684,7 @@ export const TOOLS: Tool[] = [
       horas: { type: "integer", description: "janela (padrao 24, max 168)" },
       nivel: { type: "string", enum: ["erro", "qualquer"] },
       max_resultados: { type: "integer", description: "padrao 15, max 100" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host"] },
+      }, required: ["host"] },
   },
   {
     name: "rede",
@@ -695,7 +694,7 @@ export const TOOLS: Tool[] = [
       acao: { type: "string", enum: ["ping", "dns", "tracado", "portas", "espera_porta", "info"] },
       alvo: { type: "string", description: "host/URL; em espera_porta: a porta (ex.: 5173); em info: filtra as linhas por IP, interface, gateway ou DNS" },
       timeout: { type: "integer", description: "espera_porta: segundos (padrao 30, max 900)" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "acao"] },
+      }, required: ["host", "acao"] },
   },
   {
     name: "esperar_arquivo",
@@ -705,7 +704,7 @@ export const TOOLS: Tool[] = [
       pasta: { type: "string" },
       padrao: { type: "string", description: "glob (padrao *)" },
       timeout: { type: "integer", description: "padrao 60, max 900" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "pasta"] },
+      }, required: ["host", "pasta"] },
   },
   {
     name: "power",
@@ -714,7 +713,7 @@ export const TOOLS: Tool[] = [
       host: { type: "string" },
       acao: { type: "string", enum: ["lock", "logout", "restart", "shutdown"] },
       confirmar: { type: "boolean", description: "true = ciente do efeito" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "acao"] },
+      }, required: ["host", "acao"] },
   },
   {
     name: "rodar_lote",
@@ -725,7 +724,7 @@ export const TOOLS: Tool[] = [
       timeout: { type: "integer", description: "segundos para o lote inteiro; padrao 120, max 900" },
       sessao: { type: "string", description: "roda tudo na pasta da sessao" },
       env: { type: "object", description: "variaveis para todos do lote" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "comandos"] },
+      }, required: ["host", "comandos"] },
   },
   {
     name: "sessao",
@@ -735,7 +734,7 @@ export const TOOLS: Tool[] = [
       acao: { type: "string", enum: ["abrir", "listar", "fechar"] },
       nome: { type: "string", description: "id da sessao (padrao: padrao)" },
       pasta: { type: "string", description: "abrir: diretorio que ja existe" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "acao"] },
+      }, required: ["host", "acao"] },
   },
   {
     name: "git_remoto",
@@ -748,7 +747,7 @@ export const TOOLS: Tool[] = [
       mensagem: { type: "string" },
       ref: { type: "string", description: "checkout: branch; log: quantos" },
       confirmar: { type: "boolean", description: "obrigatorio true em commit/push/checkout" },
-      tenant: { type: "string", description: "so operador" } }, required: ["host", "repo", "acao"] },
+      }, required: ["host", "repo", "acao"] },
   },
 ];
 
@@ -990,7 +989,7 @@ async function executarTool(
     case "criar_usuario":
       exigirOperador(user);
       if (typeof args.nome !== "string") throw new Error("parametros invalidos: campo obrigatorio: nome");
-      return criarUsuario(args.nome, args.papel);
+      return criarUsuario(args.nome, "usuario"); // v3.79: conta admin só pela tela
     case "apagar_usuario":
       exigirOperador(user);
       if (typeof args.nome !== "string") throw new Error("parametros invalidos: campo obrigatorio: nome");
@@ -1030,16 +1029,14 @@ async function executarTool(
         user,
       );
     case "gerar_pareamento":
-      return criarPareamento(user, alvoMaquina(user, args.tenant), String(args.nome ?? ""));
-    case "maquinas_online": {
-      const alvo = user.operador ? String(args.tenant ?? "").trim() || null : user.tenant;
-      return listarMaquinas(alvo);
-    }
+      return criarPareamento(user, alvoMaquina(user), String(args.nome ?? "")); // v3.79: máquina nasce na própria conta
+    case "maquinas_online":
+      return listarMaquinas(alvoMaquina(user)); // v3.79: só as máquinas da própria conta
     case "rodar_comando": {
       const cmdEnrolado = await wrapComando(user, args, String(args.cmd ?? ""));
       return rodar(
         user,
-        alvoMaquina(user, args.tenant),
+        alvoMaquina(user), // v3.79: sempre a própria conta
         String(args.host ?? ""),
         cmdEnrolado,
         args.timeout === undefined || args.timeout === null ? undefined : Number(args.timeout),
@@ -1105,7 +1102,7 @@ export async function despachar(msg: any, deps: McpDeps): Promise<unknown | null
     if (motivo === "desligada" || motivo === "servidor_desligado") {
       const frase =
         motivo === "servidor_desligado"
-          ? "o uso do MCP está desligado para contas comuns; fale com o operador"
+          ? "o uso do MCP está desligado para contas comuns; fale com o administrador"
           : "esta ferramenta está desligada na sua tela MCP";
       return comStatus(403, falha(id, -32001, frase));
     }

@@ -225,7 +225,7 @@ export async function atualizarUsuario(
 
   const perdeOperador = u.papel === "operador" && (papel !== "operador" || !ativo);
   if (perdeOperador && operadores.filter((o) => o !== nome).length === 0) {
-    throw erro409("este e o ultimo operador ativo: crie outro antes de rebaixar ou desativar");
+    throw erro409("este e o ultimo administrador ativo: crie outro antes de rebaixar ou desativar");
   }
 
   // v3.5: reativar pela tela DEFAZ um agendamento de exclusão (mesmo efeito de recriar
@@ -274,7 +274,7 @@ export async function removerUsuario(
   // plataforma sem admin — e como a política passou a ser "só o admin vem do env",
   // não haveria mais semente para recriá-lo no próximo boot.
   if (alvo.papel === "operador" && alvo.ativo && operadores.filter((o) => o !== nome).length === 0) {
-    throw erro409("este e o ultimo operador ativo: crie outro antes de apagar");
+    throw erro409("este e o ultimo administrador ativo: crie outro antes de apagar");
   }
 
   const { efetivos } = await lerEsquecimento();

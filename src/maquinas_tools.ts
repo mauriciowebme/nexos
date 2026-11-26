@@ -1401,7 +1401,7 @@ export async function toolMaquina(
   if (!fn) throw new HttpError(404, `tool de maquina desconhecida: ${nome}`);
   const host = S(args.host);
   if (!host) throw new HttpError(422, "host obrigatório (veja maquinas_online)");
-  const alvo = alvoMaquina(u, args.tenant as string);
+  const alvo = alvoMaquina(u); // v3.79: sempre a própria conta
   const ctx: Ctx = {
     u, alvo, host, so: await soDaMaquina(alvo, host), origem, tool: nome,
     httpBase: () => httpBaseDaMaquina(alvo, host),
@@ -1421,7 +1421,7 @@ export async function wrapComando(
   const env = validaEnv(args.env);
   let cmd = psAutoencode(cmdBruto);
   if (!sessNome && Object.keys(env).length === 0) return cmd;
-  const alvo = alvoMaquina(u, args.tenant as string);
+  const alvo = alvoMaquina(u); // v3.79: sempre a própria conta
   const so = await soDaMaquina(alvo, host);
   if (sessNome) {
     const pasta = sessoes.get(host)?.get(sessNome);

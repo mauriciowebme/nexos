@@ -573,7 +573,7 @@ export function criarApp(): FastifyInstance {
       if (!b || b.plat !== plat) throw new HttpError(403, "bilhete inválido ou vencido — gere de novo");
       alvo = b.tenant;
     } else {
-      alvo = alvoMaquina(usuario(req), q.tenant ?? null);
+      alvo = usuario(req).tenant;
     }
     const { buf, arquivo } = await gerarClienteBinario(alvo, plat, String(q.nome ?? ""));
     return reply
@@ -590,7 +590,7 @@ export function criarApp(): FastifyInstance {
     const q = req.query as Record<string, string>;
     const plat = s.plataforma === "win" || s.plataforma === "linux" ? s.plataforma : null;
     if (!plat) throw new HttpError(404, "plataforma: win | linux");
-    const alvo = alvoMaquina(u, q.tenant ?? null);
+    const alvo = u.tenant;
     const { bilhete, segundos } = emitirBilheteCliente(alvo, plat);
     return { bilhete, segundos, url: `/maquinas/cliente/${plat}?bilhete=${bilhete}` };
   });
@@ -603,37 +603,34 @@ export function criarApp(): FastifyInstance {
 
   app.get("/maquinas", async (req) => {
     const u = usuario(req);
-    const s = req.query as Record<string, string>;
-    const alvo = u.operador ? String(s.tenant ?? "").trim() || null : u.tenant;
-    return listarMaquinas(alvo);
+    /* v3.79 (dono, 26/11): máquina é privada do DONO — o admin não vê nem alcança a de
+       outra conta, e `?tenant=` da tela antiga é ignorado de propósito. */
+    return listarMaquinas(alvoMaquina(u));
   });
 
   app.post("/maquinas", async (req, reply) => {
     const u = usuario(req);
     const b = corpo(req);
-    const alvo = alvoMaquina(u, (b.tenant as string) ?? (req.query as Record<string, string>).tenant ?? null);
-    return reply.status(201).send(await criarPareamento(u, alvo, String(b.nome ?? "")));
+    return reply.status(201).send(await criarPareamento(u, alvoMaquina(u), String(b.nome ?? "")));
   });
 
   app.patch("/maquinas/:host", async (req) => {
     const u = usuario(req);
     const p = req.params as Record<string, string>;
-    const alvo = alvoMaquina(u, (req.query as Record<string, string>).tenant ?? null);
-    return mudarMaquina(u, alvo, decodeURIComponent(p.host), corpo(req));
+    return mudarMaquina(u, alvoMaquina(u), decodeURIComponent(p.host), corpo(req));
   });
 
   app.delete("/maquinas/:host", async (req) => {
     const u = usuario(req);
     const p = req.params as Record<string, string>;
-    const alvo = alvoMaquina(u, (req.query as Record<string, string>).tenant ?? null);
-    return apagarMaquina(alvo, decodeURIComponent(p.host));
+    return apagarMaquina(alvoMaquina(u), decodeURIComponent(p.host));
   });
 
   app.post("/maquinas/:host/run", async (req) => {
     const u = usuario(req);
     const p = req.params as Record<string, string>;
     const b = corpo(req);
-    const alvo = alvoMaquina(u, (b.tenant as string) ?? null);
+    const alvo = alvoMaquina(u);
     return rodar(
       u,
       alvo,
@@ -647,7 +644,7 @@ export function criarApp(): FastifyInstance {
   app.get("/maquinas/log", async (req) => {
     const u = usuario(req);
     const s = req.query as Record<string, string>;
-    const alvo = u.operador ? String(s.tenant ?? "").trim() || null : u.tenant;
+    const alvo = alvoMaquina(u); // v3.79: máquina é privada do dono, admin incluído
     return listarLog(alvo, s.host ?? null, s.limit === undefined ? 50 : Number(s.limit));
   });
 

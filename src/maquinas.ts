@@ -164,7 +164,6 @@ export async function gravarControleDeMaquina(v: boolean): Promise<void> {
 export function criarPareamento(u: Usuario, alvo: string, nomeBruto: string) {
   const nome = validarNome(nomeBruto);
   const token = randomBytes(20).toString("hex"); // mesmo formato de chave: sem segredo em log
-  void alvo;
   return q(
     `INSERT INTO pareamentos (tenant, nome, token_hash, expira_em)
      VALUES ($1, $2, $3, now() + make_interval(secs => $4))`,
@@ -178,17 +177,14 @@ export function criarPareamento(u: Usuario, alvo: string, nomeBruto: string) {
   }));
 }
 
-export async function listarMaquinas(alvo: string | null) {
-  const r = alvo
-    ? await q<any>(
-        `SELECT tenant, host, nome, so, usuario_win, ativo, visto_em, ultimo_comando_em, criado_em
-         FROM maquinas WHERE tenant = $1 ORDER BY host`,
-        [alvo],
-      )
-    : await q<any>(
-        `SELECT tenant, host, nome, so, usuario_win, ativo, visto_em, ultimo_comando_em, criado_em
-         FROM maquinas ORDER BY tenant, host`,
-      );
+/* v3.79: alvo é SEMPRE a conta do usuário (inclusive admin) — não existe mais a listagem
+   global, que era o caminho pelo qual o admin via a máquina de outra conta. */
+export async function listarMaquinas(alvo: string) {
+  const r = await q<any>(
+    `SELECT tenant, host, nome, so, usuario_win, ativo, visto_em, ultimo_comando_em, criado_em
+     FROM maquinas WHERE tenant = $1 ORDER BY host`,
+    [alvo],
+  );
   return {
     maquinas: r.rows.map((m: any) => ({
       ...m,
@@ -637,8 +633,11 @@ export function httpBaseDaMaquina(alvo: string, host: string): string | null {
   return ligacoes.get(chaveDe(alvo, host))?.httpBase || null;
 }
 
-export function alvoMaquina(u: Usuario, arg?: string | null): string {
-  return u.operador ? String(arg ?? "").trim() || u.tenant : u.tenant;
+/** v3.79 (dono, 26/11): máquina é PRIVADA de quem a pareou — admin incluído.
+ *  Antes o papel de operador mirava qualquer dono; agora o alvo é sempre a própria
+ *  conta, e é este ponto único que todas as tools de máquina consultam. */
+export function alvoMaquina(u: Usuario): string {
+  return u.tenant;
 }
 
 /* ------------------------------- canal de VOLTA (máquina -> servidor) -------

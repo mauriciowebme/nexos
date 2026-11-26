@@ -72,7 +72,7 @@ export async function gravarMcpLiberadoParaTodos(v: boolean): Promise<void> {
     [v ? "1" : "0"],
   );
   habilitadoParaTodos = v;
-  log(`mcp: acesso de usuários ${v ? "liberado" : "restrito ao operador"}`);
+  log(`mcp: acesso de usuários ${v ? "liberado" : "restrito ao administrador"}`);
 }
 
 export async function initMcpAcesso(): Promise<void> {
@@ -143,7 +143,7 @@ export async function gravarPermissao(
   permitida: boolean,
 ): Promise<void> {
   if (SO_OPERADOR.has(nome) && !operador) {
-    throw Object.assign(new Error("ferramenta de operador: o papel manda mais que a lista"), { status: 403 });
+    throw Object.assign(new Error("ferramenta de administrador: o papel manda mais que a lista"), { status: 403 });
   }
   if (permitida) {
     await q(`DELETE FROM mcp_permissoes WHERE tenant = $1 AND ferramenta = $2`, [tenant, nome]);
