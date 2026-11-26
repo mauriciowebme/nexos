@@ -1371,6 +1371,32 @@ test("nexos v2 — suíte completa", async (t) => {
     r = await call("DELETE", "/usuarios/suite-op2", { key: OPKEY });
     f.check("com outro operador sobrando, apagar operador ok (v3.5: agenda)", r.status === 200 && r.json?.agendado === true && r.json?.removido === false, r.texto.slice(0, 140));
 
+    /* ---- v3.80: gerar chave nova para um usuário que já existe (o botão da tela) ---- */
+    r = await call("POST", "/usuarios", { key: OPKEY, corpo: { nome: "suite-chave", papel: "usuario" } });
+    const chaveVelha80 = String(r.json?.chave ?? "");
+    f.check("v3.80: conta criada para o teste de chave", r.status === 201 && chaveVelha80.length > 20, r.texto.slice(0, 140));
+    let rAntiga80 = await call("GET", "/gavetas", { key: chaveVelha80 });
+    f.check("v3.80: a chave recém-criada entra", rAntiga80.status === 200, rAntiga80.status);
+    r = await call("POST", "/usuarios/suite-chave/chave", { key: OPKEY });
+    const chaveNova80 = String(r.json?.chave ?? "");
+    f.check("v3.80: POST /usuarios/:nome/chave devolve chave NOVA (diferente da antiga)", r.status === 200 && chaveNova80.length > 20 && chaveNova80 !== chaveVelha80, r.texto.slice(0, 140));
+    f.check("v3.80: a resposta não repete a chave antiga", !JSON.stringify(r.json ?? {}).includes(chaveVelha80), r.texto.slice(0, 180));
+    rAntiga80 = await call("GET", "/gavetas", { key: chaveVelha80 });
+    f.check("v3.80: a chave ANTIGA morre na hora (401)", rAntiga80.status === 401, rAntiga80.status);
+    r = await call("GET", "/gavetas", { key: chaveNova80 });
+    f.check("v3.80: a chave nova entra e é do mesmo usuário", r.status === 200 && r.json?.nome === "suite-chave", r.texto.slice(0, 160));
+    r = await call("POST", "/usuarios/suite-chave/chave", { key: chaveVelha80 });
+    f.check("v3.80: chave morta não gera outra (401 — sem escalada)", r.status === 401, r.texto.slice(0, 140));
+    r = await call("POST", "/usuarios/suite-chave/chave", { key: chaveNova80 });
+    f.check("v3.80: o próprio usuário troca a própria chave (200)", r.status === 200 && String(r.json?.chave ?? "").length > 20, r.texto.slice(0, 140));
+    const chaveFinal80 = String(r.json?.chave ?? "");
+    r = await call("POST", "/usuarios/suite-chave/chave", { key: TESTKEY });
+    f.check("v3.80: o comum NÃO troca a chave de outra conta (403)", r.status === 403, r.texto.slice(0, 140));
+    r = await call("GET", "/gavetas", { key: chaveFinal80 });
+    f.check("v3.80: a recusa não derrubou a chave do dono", r.status === 200, r.status);
+    r = await call("DELETE", "/usuarios/suite-chave", { key: OPKEY });
+    f.check("v3.80: limpeza da conta de teste de chave", r.status === 200, r.texto.slice(0, 140));
+
     r = await call("DELETE", "/usuarios/suite-novo", { key: OPKEY });
     f.check("remover usuário sem documentos (v3.5: vira agendamento)", r.status === 200 && r.json?.agendado === true, r.texto.slice(0, 120));
     await call("DELETE", `/gavetas/${GAV}`, { key: TESTKEY });
