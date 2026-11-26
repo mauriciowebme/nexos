@@ -33,7 +33,9 @@ Duas regras que confundem e por isso ficam ditas:
 - **Não há segunda autenticação.** A chave que abre a tela é a mesma que abre o MCP.
 
 Para criar um usuário: painel → Usuários, ou, para o operador, a ferramenta `criar_usuario`
-(a chave volta em claro **uma única vez**).
+(a chave volta em claro **uma única vez**). A ferramenta cria **sempre conta comum** — conta de
+administrador só nasce em *Gavetas › novo usuário*, onde o papel é escolhido de forma explícita.
+A chave aparece uma vez na tela; no histórico do chat (`chat_mensagens`) ela fica **mascarada**.
 
 ---
 
@@ -134,7 +136,10 @@ usuário comum: `listar_usuarios`, `criar_usuario`, `apagar_usuario`, `esquecime
 
 **O que cada conta vê dos próprios dados:** tudo é filtrado pelo tenant do usuário — as gavetas,
 documentos e máquinas que ele enxerga são as dele. O operador pode apontar `tenant` em várias
-ferramentas para agir na conta de outro; para usuário comum esse campo é ignorado.
+ferramentas de documentos para agir na conta de outro; para usuário comum esse campo é ignorado.
+**Máquinas são exceção (v3.79): privadas do dono, admin incluído** — as ferramentas de máquina não
+têm `tenant` e o `?tenant=` das rotas é ignorado; dar suporte na máquina de alguém exige a chave
+daquela conta.
 
 ---
 
