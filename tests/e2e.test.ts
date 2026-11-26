@@ -1361,7 +1361,7 @@ test("nexos v2 — suíte completa", async (t) => {
     const nomeOp = String(ops[0]?.nome ?? "");
 
     r = await call("DELETE", `/usuarios/${nomeOp}`, { key: OPKEY });
-    f.check("apagar o último operador -> 409 (admin não se tranca fora)", r.status === 409 && /ultimo operador/.test(String(r.json?.detail ?? "")), r.texto.slice(0, 180));
+    f.check("apagar o último operador -> 409 (admin não se tranca fora)", r.status === 409 && /ultimo administrador/.test(String(r.json?.detail ?? "")), r.texto.slice(0, 180));
     r = await call("GET", "/gavetas", { key: OPKEY });
     f.check("o operador continua vivo depois da recusa", r.status === 200, r.status);
 
@@ -1407,8 +1407,8 @@ test("nexos v2 — suíte completa", async (t) => {
       "const t=m.filter(x=>x.role==='tool');return diz(t.length?('USEI:'+String(t[0].content).slice(0,90)):'SEM_FERRAMENTA');}",
       "if(nome==='parcial'){if(tools.length)return pede('p'+m.length,tools[0].function.name,'{}');return diz('SEM_TOOLS');}",
       "if(nome==='usuario'){",
-      "if(!m.some(x=>x.role==='tool'))return pede('u1','criar_usuario','{\"nome\":\"suite-segredo\",\"papel\":\"usuario\"}');",
-      "return diz('CRIEI o usuario; a chave dele nao mostro aqui');}",
+      "if(!m.some(x=>x.role==='tool'))return pede('u1','criar_usuario','{\"nome\":\"suite-segredo\"}');",
+      "const tt=m.filter(x=>x.role==='tool');return diz('CRIEI. resultado: '+String(tt[tt.length-1].content));}",
       "diz('resposta do provider falso');});});",
       "s.listen(9913,'127.0.0.1');setTimeout(()=>process.exit(0),240000);",
     ].join("");
@@ -1559,12 +1559,42 @@ test("nexos v2 — suíte completa", async (t) => {
     r = await call("POST", "/chat", { key: OPKEY, corpo: { pergunta: "crie um usuario novo", memoria: GAV } });
     const chamada2 = (r.json?.ferramentas ?? [])[0] ?? {};
     f.check("chat criou usuário de verdade (execução direta)", chamada2.nome === "criar_usuario" && chamada2.ok === true, chamada2);
+    /* v3.79: a chave aparece UMA vez na tela; o que o banco guarda é a versão mascarada. */
+    const respostaViva = String(r.json?.resposta ?? "");
     r = await call("GET", "/usuarios", { key: OPKEY });
     f.check("usuário criado pelo chat existe", (r.json?.usuarios ?? []).some((u: any) => u.nome === "suite-segredo"), (r.json?.usuarios ?? []).map((u: any) => u.nome));
     r = await call("GET", `/chat?memoria=${GAV}`, { key: OPKEY });
     const achada = await call("POST", "/chat", { key: OPKEY, corpo: { pergunta: "mostre a chave criada", memoria: GAV } });
     const registrada = JSON.stringify(achada.json?.ferramentas ?? []);
     f.check("o registro da ferramenta não devolve chave em claro", !/nx_[A-Za-z0-9_-]{8,}/.test(registrada), registrada.slice(0, 160));
+    f.check(
+      "v3.79: a chave volta em claro na resposta AO VIVO (o dono copia uma vez)",
+      /mr_[A-Za-z0-9_-]{20,}/.test(respostaViva),
+      respostaViva.slice(0, 200),
+    );
+    r = await call("GET", `/chat?memoria=${GAV}`, { key: OPKEY });
+    const textoGravado = (r.json?.mensagens ?? [])
+      .filter((m: any) => m.papel === "assistant")
+      .map((m: any) => String(m.texto ?? ""))
+      .join("\n");
+    f.check(
+      "v3.79: chave NÃO fica no histórico (gravada mascarada)",
+      !/mr_[A-Za-z0-9_-]{16,}/.test(textoGravado) && /••••/.test(textoGravado),
+      textoGravado.slice(0, 200),
+    );
+    /* v3.79 (dono, 26/11): conta de ADMINISTRADOR não nasce por aqui — `papel` é ignorado. */
+    r = await call("POST", "/mcp", {
+      key: OPKEY,
+      corpo: { jsonrpc: "2.0", id: 90, method: "tools/call", params: { name: "criar_usuario", arguments: { nome: "suite-v379-adm", papel: "operador" } } },
+    });
+    const listaPos = await call("GET", "/usuarios", { key: OPKEY });
+    const criadoAdm = (listaPos.json?.usuarios ?? []).find((u: any) => u.nome === "suite-v379-adm") ?? {};
+    f.check(
+      "v3.79: criar_usuario ignora papel=operador (conta sai comum)",
+      r.status === 200 && criadoAdm.papel === "usuario",
+      JSON.stringify(criadoAdm) || r.texto.slice(0, 160),
+    );
+    await call("DELETE", "/usuarios/suite-v379-adm", { key: OPKEY });
     await call("DELETE", "/usuarios/suite-segredo", { key: OPKEY });
 
     /* ---- 7. servidor MCP externo cadastrado por endereço ---- */
@@ -2683,8 +2713,25 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     await ate(() => leArq("/tmp/aop.json").includes("ok"));
     r = await call("POST", "/maquinas/maq-op/run", { key: TESTKEY, corpo: { cmd: "echo cruza" } });
     f.check("comum NÃO alcança máquina de outro dono (404)", r.status === 404, r.texto.slice(0, 120));
-    r = await call("POST", "/maquinas/maq-op/run?tenant=operador", { key: OPKEY, corpo: { cmd: "echo admin-mira" } });
-    f.check("admin alcança máquina alheia com ?tenant", r.status === 200 && r.json?.stdout === "admin-mira", r.texto.slice(0, 140));
+    r = await call("POST", "/maquinas/maq-op/run", { key: OPKEY, corpo: { cmd: "echo admin-mira" } });
+    f.check("admin roda na PRÓPRIA máquina", r.status === 200 && r.json?.stdout === "admin-mira", r.texto.slice(0, 140));
+    r = await call("POST", "/maquinas/maq-01/run?tenant=teste", { key: OPKEY, corpo: { cmd: "echo admin-mira" } });
+    f.check("v3.79: admin NÃO alcança máquina de outro dono nem com ?tenant (404)", r.status === 404, r.texto.slice(0, 140));
+    r = await call("GET", "/maquinas?tenant=teste", { key: OPKEY });
+    const donosVistos = (r.json?.maquinas ?? []).map((m: any) => m.tenant + "/" + m.host);
+    f.check(
+      "v3.79: admin lista SÓ as máquinas da própria conta (?tenant ignorado)",
+      r.status === 200 && donosVistos.length > 0 && donosVistos.every((x: string) => x.startsWith("op/")),
+      donosVistos.join(","),
+    );
+    r = await call("PATCH", "/maquinas/maq-01?tenant=teste", { key: OPKEY, corpo: { ativo: false } });
+    f.check("v3.79: admin NÃO liga/desliga máquina alheia (404)", r.status === 404, r.texto.slice(0, 120));
+    r = await call("POST", "/maquinas", { key: OPKEY, corpo: { nome: "suite-v379", tenant: "teste" } });
+    f.check(
+      "v3.79: pareamento nasce na conta de QUEM PEDIU, mesmo com tenant no corpo",
+      r.status === 201 && psql(`SELECT tenant FROM pareamentos WHERE nome='suite-v379' LIMIT 1`) === "op",
+      psql(`SELECT tenant||'/'||nome FROM pareamentos WHERE nome='suite-v379'`),
+    );
     r = await call("GET", "/maquinas?tenant=operador", { key: TESTKEY });
     f.check("comum pede ?tenant de outro e só vê as suas", r.status === 200 && (r.json?.maquinas ?? []).every((m: any) => m.tenant === "teste"), r.texto.slice(0, 160));
 
@@ -2720,8 +2767,15 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.check("log traz a execução vinda do MCP", r.json?.log?.[0]?.origem === "mcp", JSON.stringify(r.json?.log?.[0] ?? {}).slice(0, 120));
     r = await mcp(3, "maquinas_online", {}, OPKEY);
     const onlMcp = JSON.parse(r.json?.result?.content?.[0]?.text ?? "{}");
-    f.check("MCP maquinas_online (admin sem tenant) enxerga todas", (onlMcp?.maquinas ?? []).some((m: any) => m.host === "maq-mcp") && (onlMcp?.maquinas ?? []).some((m: any) => m.host === "maq-op"), (onlMcp?.maquinas ?? []).map((m: any) => m.host).join(","));
-    const linMcp = (onlMcp?.maquinas ?? []).find((m: any) => m.host === "maq-mcp");
+    const onlHosts = (onlMcp?.maquinas ?? []).map((m: any) => m.tenant + "/" + m.host);
+    f.check(
+      "v3.79: MCP maquinas_online do admin NÃO enxerga máquina de outra conta",
+      onlHosts.length > 0 && onlHosts.every((x: string) => x.startsWith("op/")) && !onlHosts.includes("teste/maq-mcp"),
+      onlHosts.join(","),
+    );
+    r = await mcp(4, "maquinas_online", {}, TESTKEY);
+    const onlComum = JSON.parse(r.json?.result?.content?.[0]?.text ?? "{}");
+    const linMcp = (onlComum?.maquinas ?? []).find((m: any) => m.host === "maq-mcp");
     f.check(
       "v3.75: maquinas_online (MCP) devolve o ultimo_comando_em de quem acabou de rodar",
       linMcp?.ultimo_comando_em != null && Date.now() - new Date(linMcp!.ultimo_comando_em).getTime() < 120_000,
