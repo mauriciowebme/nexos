@@ -1003,12 +1003,8 @@
       display: inline-flex;
     }
   }
-  /* no topo os dois botões têm o MESMO peso visual (o "+" sozinho parecia ação menor) */
-  .chat-topo .chat-nova {
-    @apply border-bordaforte bg-[#2a3344] text-txt hover:border-[#43506a] hover:bg-[#333d51];
-  }
-  /* v3.16: a pílula do topo (modelo+gaveta) não existe mais — o contexto vive na
-     lateral (.conv-bloco) e a ação desceu para a linha do campo (.chat-nova). */
+  /* v3.81.1: o "nova conversa" da linha do campo saiu — o botão vive na coluna de
+     conversas (.conv-nova). */
   .chat-acao {
     @apply inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-[11px] border
       border-borda bg-transparent px-3 text-[13px] text-txt2 hover:bg-sup2 hover:text-txt;
@@ -1116,10 +1112,6 @@
     @apply mx-0 flex-1;
     max-width: none;
     min-width: 0;
-  }
-  .chat-nova {
-    @apply inline-flex h-[48px] flex-none cursor-pointer items-center gap-2 rounded-xl border
-      border-borda bg-sup2 px-3 text-[12.5px] text-txt2 hover:border-bordaforte hover:bg-sup3 hover:text-txt;
   }
   .chat-segundo-plano {
     @apply mx-auto mb-1.5 max-w-[780px] pl-1 text-[11.5px] text-txt3;
@@ -1430,20 +1422,10 @@
     width: 44px;
     justify-content: center;
   }
-  /* v3.16: no celular "nova conversa" é só o ícone — 44px de dedo, embaixo, do lado do campo */
-  .chat-nova {
-    @apply px-0;
-    width: 44px;
-    height: 44px;
-    justify-content: center;
-  }
   /* v3.22 (preview aprovado): a engrenagem segue a regra do dedo (44px no celular) */
   .chat-ajustes-boto {
     width: 44px;
     height: 44px;
-  }
-  .chat-nova-rotulo {
-    @apply hidden;
   }
   /* v3.18 — no celular o chip de edição é só o ✕: o rótulo de 72px esmagava o campo */
   .chat-editar-rotulo {
@@ -1481,5 +1463,166 @@
      que o dono viu. Agora barra e botões vivem no mesmo centro de 48px. */
   .chat-piso-linha {
     @apply items-center;
+  }
+}
+/* ============================================================ v3.81 — CONVERSAS
+   O desenho aprovado em 26/11: trilho de ícones (64px) + coluna de conversas (300px)
+   + o chat. A navegação vira ícone com o nome no title; a lista é a casa do histórico. */
+@layer components {
+  .rail {
+    @apply flex h-full min-h-0 w-[64px] flex-none flex-col items-center gap-1 border-r border-borda bg-sup px-2 py-3;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .rail .nav-item {
+    @apply w-[44px] justify-center gap-0 px-0;
+    font-size: 0;
+  }
+  .rail .nav-item svg {
+    @apply h-[19px] w-[19px];
+  }
+  .rail .nav-seta {
+    display: none;
+  }
+  .rail-grupo {
+    @apply relative w-full;
+  }
+  /* Configurações: as seções abrem num flyout à direita do trilho */
+  .rail .nav-rail {
+    position: absolute;
+    left: 52px;
+    top: -4px;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 156px;
+    margin: 0;
+    padding: 6px;
+    border: 1px solid var(--borda, #232c3a);
+    border-radius: 10px;
+    background: var(--sup-3, #1d2532);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+  .rail-logo {
+    @apply mb-2 grid h-[40px] w-[40px] place-items-center text-[18px] text-verde;
+  }
+  .rail-avatar {
+    @apply grid h-[34px] w-[34px] place-items-center rounded-[10px] border border-bordaforte bg-sup3 text-[11.5px] text-verde;
+  }
+  .rail-sair,
+  .rail-versao {
+    @apply text-txt3 hover:text-txt;
+  }
+  .rail-sair {
+    @apply grid h-[26px] w-[34px] place-items-center rounded-[7px] text-[13px];
+  }
+  .rail-versao {
+    @apply pb-1 text-[9px] tracking-[0.02em];
+    opacity: 0.75;
+  }
+  /* pílulas de contexto no topo do chat (gaveta + modelo) */
+  .chat-chip {
+    @apply flex max-w-[210px] items-center gap-1.5 rounded-full border border-borda bg-sup px-2.5 py-[3px] text-[11.5px] text-txt2;
+  }
+  .chat-chip-rot {
+    @apply text-[10.5px] uppercase tracking-[0.05em] text-txt3;
+  }
+  .chat-chip select {
+    @apply max-w-[130px] truncate bg-transparent text-[11.5px] text-txt outline-none;
+  }
+  @media (max-width: 720px) {
+    .chat-chip-modelo {
+      display: none;
+    }
+  }
+  .rail-user {
+    @apply mt-auto flex w-full flex-col items-center gap-2 border-t border-borda pt-3;
+  }
+
+  .conv-painel {
+    @apply flex h-full min-h-0 w-[300px] flex-none flex-col border-r border-borda bg-sup;
+  }
+  .conv-painel-topo {
+    @apply flex items-center gap-1.5 px-2.5 pb-1.5 pt-3;
+  }
+  .conv-nova {
+    @apply flex flex-1 items-center justify-center gap-1.5 rounded-[10px] px-3 py-[9px] text-[13px] font-[550] text-verde transition-colors;
+    background: color-mix(in srgb, var(--verde, #4ccd60) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--verde, #4ccd60) 35%, transparent);
+  }
+  .conv-nova:hover {
+    background: color-mix(in srgb, var(--verde, #4ccd60) 20%, transparent);
+  }
+  .conv-fechar {
+    @apply grid h-[34px] w-[34px] place-items-center rounded-[9px] text-txt3 hover:bg-sup2 hover:text-txt;
+  }
+  .conv-busca {
+    @apply mx-2.5 mb-2 rounded-[9px] border border-borda bg-bg px-2.5 py-[7px] text-[12.5px] text-txt outline-none placeholder:text-txt3 focus:border-bordaforte;
+  }
+  .conv-lista {
+    @apply min-h-0 flex-1 overflow-y-auto px-1.5 pb-2;
+    overscroll-behavior: contain;
+  }
+  .conv-grupo {
+    @apply mb-1;
+  }
+  .conv-grupo-rotulo {
+    @apply px-2 pb-1 pt-2.5 text-[10.5px] font-[600] uppercase tracking-[0.08em] text-txt3;
+  }
+  .conv-item {
+    @apply relative flex items-start gap-0.5 rounded-[9px] transition-colors hover:bg-sup2;
+  }
+  .conv-item-on {
+    @apply bg-sup3;
+  }
+  .conv-item-corpo {
+    @apply flex min-w-0 flex-1 flex-col gap-[1px] px-2 py-[7px] text-left;
+  }
+  .conv-item-titulo {
+    @apply truncate text-[13px] font-[550] text-txt;
+  }
+  .conv-item-previa {
+    @apply truncate text-[11.5px] text-txt3;
+  }
+  .conv-item-meta {
+    @apply truncate text-[10.5px] text-txt3;
+    opacity: 0.8;
+  }
+  .conv-item-menu {
+    @apply mt-1 mr-1 grid h-[24px] w-[22px] flex-none place-items-center rounded-[6px] text-txt3 opacity-0 transition-opacity hover:bg-borda hover:text-txt;
+  }
+  .conv-item:hover .conv-item-menu,
+  .conv-item-on .conv-item-menu {
+    opacity: 1;
+  }
+  .conv-menu {
+    @apply absolute right-1 top-[30px] z-20 flex w-[128px] flex-col rounded-[9px] border border-borda bg-sup3 p-1 shadow-painel;
+  }
+  .conv-menu button {
+    @apply rounded-[6px] px-2 py-1.5 text-left text-[12.5px] text-txt2 hover:bg-sup2 hover:text-txt;
+  }
+  .conv-renomear {
+    @apply m-1 w-full rounded-[6px] border border-verde bg-bg px-2 py-1.5 text-[12.5px] text-txt outline-none;
+  }
+  .conv-vazio {
+    @apply px-3 py-6 text-center text-[12px] leading-relaxed text-txt3;
+  }
+  .conv-rodape {
+    @apply border-t border-borda px-3 py-2 text-[10.5px] text-txt3;
+  }
+  /* a marca de compactação — tracejada, clicável */
+  .marca-compactacao {
+    @apply my-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-[10px] border border-dashed border-borda px-3 py-2 text-[12px] text-txt2;
+    background: color-mix(in srgb, var(--sup-2, #1a212c) 55%, transparent);
+  }
+  .marca-compactacao button {
+    @apply text-[12px] font-[550] text-verde hover:underline;
+  }
+  /* celular: a lista vira gaveta sobre o chat */
+  @media (max-width: 900px) {
+    .conv-painel {
+      @apply fixed inset-y-0 left-0 z-40 w-[86vw] max-w-[340px] shadow-painel;
+    }
   }
 }

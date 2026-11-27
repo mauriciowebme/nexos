@@ -6,6 +6,8 @@ import { Arquivos } from "./components/Arquivos";
 import { Editor } from "./components/Editor";
 import { Painel } from "./components/Painel";
 import { Chat } from "./components/Chat";
+import { Conversas } from "./components/Conversas";
+import { criarConversa, listarConversas } from "./lib/conversas";
 import { Config, SECOES_CFG, type Aba } from "./components/Config";
 import { Maquinas } from "./components/Maquinas";
 import { Mcp } from "./components/Mcp";
@@ -228,6 +230,62 @@ export default function App() {
     }
   }, [vista, navegar]);
 
+  /* v3.81 — estado das conversas: hooks ANTES do return do login (ordem de hooks fixa) */
+  /* v3.81 — a conversa aberta. null = rascunho (a primeira mensagem cria a conversa no
+     servidor); trocar de gaveta zera a escolha, porque a conversa é de uma gaveta. */
+  const [conversaSel, setConversaSel] = useState<number | null>(null);
+  const [recargaConversas, setRecargaConversas] = useState(0);
+  const [resetChat, setResetChat] = useState(0);
+  const [listaAberta, setListaAberta] = useState(false);
+  useEffect(() => {
+    setConversaSel(null);
+  }, [sessao.sessao.tenant, sessao.sessao.memoria]);
+
+  /* "+ nova conversa": cria a conversa no servidor e abre (nada é apagado) */
+  const novaConversa = useCallback(() => {
+    const t = sessao.sessao;
+    const tenantArg = t.operador && t.tenant ? t.tenant : undefined;
+    void criarConversa(t.memoria, tenantArg)
+      .then((id) => {
+        setConversaSel(id);
+        setResetChat((n) => n + 1);
+        setRecargaConversas((n) => n + 1);
+        setListaAberta(false);
+      })
+      .catch(() => undefined);
+  }, [sessao.sessao.memoria, sessao.sessao.tenant, sessao.sessao.operador]);
+
+  /* abriu o chat sem conversa escolhida: volta na mais recente da gaveta (ou cria a primeira) */
+  useEffect(() => {
+    if (!sessao.logado || vista !== "chat" || conversaSel !== null) return;
+    let vivo = true;
+    const t = sessao.sessao;
+    const tenantArg = t.operador && t.tenant ? t.tenant : undefined;
+    void (async () => {
+      const r = await listarConversas({ memoria: t.memoria, tenant: tenantArg, limit: 1 });
+      const id = r.conversas?.[0]?.id ?? (await criarConversa(t.memoria, tenantArg));
+      if (vivo) setConversaSel(id);
+    })().catch(() => undefined);
+    return () => {
+      vivo = false;
+    };
+  }, [sessao.logado, vista, conversaSel, sessao.sessao.memoria, sessao.sessao.tenant, sessao.sessao.operador]);
+
+  /* um turno terminou: a lista atualiza; se a conversa nasceu agora, ela vira a aberta */
+  const turnoGravado = useCallback(() => {
+    setRecargaConversas((n) => n + 1);
+    setConversaSel((atual) => {
+      if (atual !== null) return atual;
+      void listarConversas({ memoria: sessao.sessao.memoria, tenant: sessao.sessao.operador && sessao.sessao.tenant ? sessao.sessao.tenant : undefined, limit: 1 })
+        .then((r) => {
+          const nova = r.conversas?.[0];
+          if (nova) setConversaSel(nova.id);
+        })
+        .catch(() => undefined);
+      return atual;
+    });
+  }, [sessao.sessao.memoria, sessao.sessao.operador, sessao.sessao.tenant]);
+
   if (!sessao.logado) {
     return (
       <div className="min-h-[100dvh]">
@@ -239,17 +297,15 @@ export default function App() {
 
   const { tenant, memoria, operador, nome } = sessao.sessao;
   const titulo = vista === "gavetas" && !operador ? "Gavetas" : TITULOS[vista];
-
   const lateral = (
-    <aside className="flex h-full min-h-0 w-[224px] flex-none flex-col gap-0.5 overflow-y-auto overscroll-contain border-r border-borda bg-sup px-2.5 py-4">
-      <div className="flex items-center gap-2 px-2 pb-4 text-[15px] font-semibold tracking-[0.2px]">
-        <span className="text-verde">◆</span> nexos
+    <aside className="rail" aria-label="menu">
+      <div className="rail-logo" title="nexos">
+        ◆
       </div>
 
-      {/* Um menu só, na ordem definida pelo dono (sem títulos de grupo: "visão geral"
-          e "memória" saíram — a divisão não ajudava a achar nada). */}
+      {/* Um menu só, na ordem do dono. No trilho o item é ícone; o nome vive no title
+          (e no aria-label) — a lista de conversas ao lado é que carrega texto. */}
       {MENU.filter((m) => (operador || VISTAS_DO_COMUM.includes(m.id)) && (m.id !== "maquinas" || controleMaq)).map((m) => {
-        /* v3.48: Arquivos é item de menu; o destaque de Usuários fica só no drill-down */
         const ativo =
           m.id === "gavetas"
             ? vista === "gavetas" || (DENTRO_DO_CAMINHO.has(vista) && Boolean(usuarioAberto))
@@ -261,6 +317,8 @@ export default function App() {
             data-menu={m.id}
             aria-current={ativo ? "page" : undefined}
             aria-expanded={m.id === "config" ? cfgAberto : undefined}
+            aria-label={rotulo}
+            title={rotulo}
             className={"nav-item" + (ativo ? (m.id === "config" && cfgAberto ? " nav-item-suave" : " nav-item-on") : "")}
             onClick={() => (m.id === "config" ? cliqueConfig() : navegar(m.id))}
           >
@@ -277,22 +335,12 @@ export default function App() {
               {IC[m.icone]}
             </svg>
             {rotulo}
-            {m.id === "config" && (
-              <span className={"nav-seta" + (cfgAberto ? " nav-seta-on" : "")} aria-hidden="true">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 18l6-6-6-6" />
-                </svg>
-              </span>
-            )}
           </button>
         );
-        /* v3.19.1 (política do dono, 26/10): Configurações é item pai — as seções
-           aparecem como FILHOS indentados no menu principal, cada um navegando
-           direto para a seção. v3.21: o accordion interno saiu; a lateral é a
-           navegação única das seções. */
         if (m.id !== "config") return botao;
+        /* as seções de Configurações abrem como flyout à direita do trilho */
         return (
-          <div key="config-grupo" className="flex flex-col gap-0.5">
+          <div key="config-grupo" className="rail-grupo">
             {botao}
             {cfgAberto && (
               <div className="nav-rail">
@@ -316,74 +364,21 @@ export default function App() {
         );
       })}
 
-      {/* v3.16: contexto da conversa — a gaveta que o Chat escreve e o modelo em uso.
-          Isso vivia numa pílula no topo da conversa; a tela do chat agora é só conversa
-          e caixa de escrita. No celular o bloco acompanha a lateral para dentro da gaveta ☰. */}
-      <div className="conv-bloco">
-        <div className="conv-linha">
-          <span className="conv-legenda">gaveta</span>
-          <select
-            id="chatGaveta"
-            className="conv-gav"
-            value={memoria}
-            onChange={(e) => sessao.escopo(tenant, e.target.value)}
-            aria-label="gaveta"
-            title={memoria || "padrão"}
-          >
-            {gavetas.map((g) => (
-              <option key={g.memoria} value={g.memoria}>
-                {g.fixada ? "📌 " : ""}
-                {g.rotulo}
-              </option>
-            ))}
-          </select>
+      <div className="rail-user">
+        <div
+          className="rail-avatar"
+          title={`${nome} · ${operador ? "administrador" : "usuário"}${operador && tenant ? ` · foco: ${tenant}` : ""}`}
+        >
+          {(nome || "?").slice(0, 2).toUpperCase()}
         </div>
-        <div className="conv-linha">
-          <span className="conv-legenda">modelo</span>
-          <span className="mono conv-modelo" title={provider?.modelo ?? "sem modelo"}>
-            {provider?.modelo ?? "sem modelo"}
-          </span>
-        </div>
-        {/* v3.16: a linha "› ver detalhes" morava embaixo da caixa de escrita e era o ÚNICO
-           lugar onde o usuário comum via provider, chave mascarada e MCP do turno.
-           Veio para a lateral junto com o modelo — a tela do chat fica só com a conversa. */}
-        {provider && provider.configurado && (
-          <details className="conv-detalhe" id="chatRodape">
-            <summary>› ver detalhes</summary>
-            <p>
-              provider {provider.origem === "global" ? "global" : "seu"}
-              {provider.chave_mascarada ? ` · chave ${provider.chave_mascarada}` : ""} ·{" "}
-              {provider.tem_system_prompt ? "com instruções do modelo" : "sem instruções (conversa pura)"} ·{" "}
-              {provider.mcp_interno ? "MCP do nexos ligado" : "MCP do nexos desligado"} · até {provider.max_rodadas} rodada(s) · memória{" "}
-              {provider.memoria_turnos} · janela {provider.janela_efetiva.toLocaleString("pt-BR")} tokens ({provider.origem_janela})
-            </p>
-          </details>
-        )}
-      </div>
-
-      <div className="mt-auto border-t border-borda pt-3">
-        <div className="flex items-center gap-2 px-1">
-          <div className="grid h-8 w-8 place-items-center rounded-[10px] border border-bordaforte bg-sup3 text-[12px] text-verde">
-            {(nome || "?").slice(0, 2).toUpperCase()}
-          </div>
-          <div className="min-w-0">
-            <div className="truncate text-[13px] font-semibold">{nome}</div>
-            <div className="text-[11px] text-txt3">{operador ? "administrador" : "usuário"}</div>
-            {/* v3.14.1 — no celular o chat ocupa a tela toda e o chip de foco saiu do topo:
-                o usuário em foco passa a viver aqui dentro do menu */}
-            {operador && tenant && (
-              <div className="truncate text-[11px] text-txt3" title="usuário em foco">
-                foco: {tenant}
-              </div>
-            )}
-          </div>
-        </div>
-        <button id="btnSair" className="btn btn-sutil mt-2 w-full justify-start" title="sair da sessão" onClick={() => sessao.sair()}>
-          sair
+        <button id="btnSair" className="rail-sair" title="sair da sessão" aria-label="sair" onClick={() => sessao.sair()}>
+          ⏻
         </button>
-        {/* v3.16: a versão era chip no rodapé da tela; a lateral é a casa única dela
-            (o rodapé saiu da tela do chat e repetia o que já estava aqui) */}
-        {versao && <div id="ver" className="px-1 pt-1 text-[10.5px] text-txt3">versão {versao}</div>}
+        {versao && (
+          <div id="ver" className="rail-versao" title={`versão ${versao}`}>
+            {versao}
+          </div>
+        )}
       </div>
     </aside>
   );
@@ -391,6 +386,45 @@ export default function App() {
   return (
     <div className="flex min-h-[100dvh]">
       <div className="sticky top-0 hidden h-[100dvh] lg:block">{lateral}</div>
+
+      {/* v3.81: no Chat, a coluna de conversas mora entre o trilho e a conversa */}
+      {vista === "chat" && (
+        <div className="sticky top-0 hidden h-[100dvh] lg:block">
+          <Conversas
+            tenant={tenant}
+            operador={operador}
+            memoria={memoria}
+            selecionada={conversaSel}
+            recarga={recargaConversas}
+            onSelecionar={(id) => {
+              setConversaSel(id);
+              setListaAberta(false);
+            }}
+            onNova={novaConversa}
+          />
+        </div>
+      )}
+
+      {vista === "chat" && listaAberta && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setListaAberta(false)} />
+          <div className="absolute inset-y-0 left-0">
+            <Conversas
+              tenant={tenant}
+              operador={operador}
+              memoria={memoria}
+              selecionada={conversaSel}
+              recarga={recargaConversas}
+              onSelecionar={(id) => {
+                setConversaSel(id);
+                setListaAberta(false);
+              }}
+              onNova={novaConversa}
+              onFechar={() => setListaAberta(false)}
+            />
+          </div>
+        </div>
+      )}
 
       {menuAberto && (
         <div className="fixed inset-0 z-30 lg:hidden">
@@ -493,6 +527,12 @@ export default function App() {
               onProviderConfirmado={() => setProvider((p) => (p ? { ...p, configurado: true } : p))}
               onIrConfig={() => navegar("config")}
               onAbrirMenu={() => setMenuAberto(true)}
+              onAbrirConversas={() => setListaAberta(true)}
+              conversaId={conversaSel}
+              onTurnoFim={turnoGravado}
+              gavetas={gavetas}
+              onTrocarGaveta={(m) => sessao.escopo(tenant, m)}
+              resetSinal={resetChat}
             />
           )}
 

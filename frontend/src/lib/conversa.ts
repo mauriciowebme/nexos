@@ -199,6 +199,8 @@ export type Estado = {
   /** v3.73 (T054): retrato do contexto do ÚLTIMO envio desta conversa (null = nunca enviou,
    *  ou o provedor não contou e o histórico não trouxe o número: sem os dois números, sem barra) */
   contexto: RetratoContexto | null;
+  /** v3.81: a conversa no servidor (null = rascunho; o primeiro turno cria) */
+  conversaId: number | null;
 };
 
 type Conversa = Estado & { ouvintes: Set<() => void> };
@@ -314,7 +316,7 @@ const proximoId = () => `c${Date.now().toString(36)}-${++seq}`;
 const conversas = new Map<string, Conversa>();
 
 function nova(): Conversa {
-  return { msgs: [], fila: [], rodando: false, tarefaId: "", parando: false, vivo: "", inicio: 0, contexto: null, ouvintes: new Set() };
+  return { msgs: [], fila: [], rodando: false, tarefaId: "", parando: false, vivo: "", inicio: 0, contexto: null, conversaId: null, ouvintes: new Set() };
 }
 
 /* v3.19: provedor/modelo escolhidos POR CONVERSA — a tela lembra e todo reenvio
@@ -393,7 +395,7 @@ function notifica(chave: string): void {
 /** fotografia imutável do estado (o que o Chat renderiza) */
 export function estado(chave: string): Estado {
   const c = pega(chave);
-  return { msgs: c.msgs.slice(), fila: c.fila.slice(), rodando: c.rodando, tarefaId: c.tarefaId, parando: c.parando, vivo: c.vivo, inicio: c.inicio, contexto: c.contexto };
+  return { msgs: c.msgs.slice(), fila: c.fila.slice(), rodando: c.rodando, tarefaId: c.tarefaId, parando: c.parando, vivo: c.vivo, inicio: c.inicio, contexto: c.contexto, conversaId: c.conversaId };
 }
 
 /** dá para assinar mesmo com a tela fechada: o trabalho continua e a tela volta quando quiser */
@@ -442,6 +444,14 @@ export function enviar(
 }
 
 /** v3.42 — a tarefa viva desta conversa (para encaixar fala no MEIO do turno) */
+/** v3.81: a tela abriu/selecionou uma conversa — todo turno desta chave leva o id. */
+export function definirConversa(chave: string, id: number | null): void {
+  const c = pega(chave);
+  if (c.conversaId === id) return;
+  c.conversaId = id;
+  notifica(chave);
+}
+
 export function tarefaViva(chave: string): string {
   const c = pega(chave);
   return c.rodando && c.tarefaId ? c.tarefaId : "";
@@ -735,7 +745,8 @@ async function bombeia(chave: string, memoria: string, tenant: string | undefine
   try {
     const saida = await transportar(
       { pergunta: item.texto, memoria, ...(tenant ? { tenant } : {}), ...(item.imagens?.length ? { imagens: item.imagens } : {}),
-        ...(item.arquivos?.length ? { anexos: item.arquivos } : {}), ...getSelecao(chave) },
+        ...(item.arquivos?.length ? { anexos: item.arquivos } : {}), ...(c.conversaId ? { conversa_id: c.conversaId } : {}),
+        ...getSelecao(chave) },
       (e) => {
       const bolha = c.msgs.find((m) => m.id === vivoId);
       if (!bolha) return;

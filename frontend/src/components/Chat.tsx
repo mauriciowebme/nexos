@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiErro, blobUrl, del, get, getStream, post, postStream, qs, subirAnexo, cortarStreams, temFluxoAssistindo } from "../services/api";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { ApiErro, blobUrl, get, getStream, post, postStream, qs, subirAnexo, cortarStreams, temFluxoAssistindo } from "../services/api";
 import { useToast } from "./Toast";
 import { mdParaHtml } from "../lib/md";
 import { TelaGerada } from "./TelaGerada";
+import { abrirConversa } from "../lib/conversas";
 import {
   apararAteSid,
   assinar,
   cancelar,
   chaveConversa,
+  definirConversa,
   definirSelecao,
   descartarUltimos,
   pedirParada,
@@ -569,9 +571,23 @@ export function Chat({
   onProviderConfirmado,
   onIrConfig,
   onAbrirMenu,
+  onAbrirConversas,
+  conversaId,
+  onTurnoFim,
+  gavetas,
+  onTrocarGaveta,
+  resetSinal,
 }: {
   escopo: { tenant: string; memoria: string };
   operador: boolean;
+  /** v3.81: a conversa aberta (null = rascunho, a primeira mensagem cria a conversa) */
+  conversaId: number | null;
+  /** um turno terminou de gravar: a lista lateral recarrega (título, data, prévia) */
+  onTurnoFim: () => void;
+  gavetas: { memoria: string; rotulo: string; fixada: boolean }[];
+  onTrocarGaveta: (memoria: string) => void;
+  /** v3.81: "+ nova conversa" no painel lateral — o chat limpa a tela, o servidor não apaga nada */
+  resetSinal: number;
   /** v3.16: o provider (e o modelo em uso) agora é buscado pelo App e mostrado na
    * lateral; o Chat recebe por props — a pílula do topo saiu de cena. */
   provider: ProviderResp | null;
@@ -580,6 +596,8 @@ export function Chat({
   onProviderConfirmado: () => void;
   onIrConfig: () => void;
   onAbrirMenu: () => void;
+  /** v3.81: abre a coluna de conversas no celular (a lista vive em gaveta) */
+  onAbrirConversas: () => void;
 }) {
   const { toast } = useToast();
   const [memoria, setMemoria] = useState(escopo.memoria);
@@ -657,7 +675,27 @@ export function Chat({
   }
 
   const tenantParam = operador && escopo.tenant ? escopo.tenant : undefined;
-  const chave = chaveConversa(escopo.tenant, memoria);
+  /* v3.81: a chave do estado vivo é a CONVERSA (id). Sem id ainda, é o rascunho da gaveta —
+     quando o turno cria a conversa, o App seleciona o id e a chave muda (histórico reabre). */
+  const chave = conversaId ? chaveConversa(escopo.tenant, `c${conversaId}`) : chaveConversa(escopo.tenant, memoria);
+  /* até onde o resumo da compactação cobriu (id da mensagem) — desenha a marca na conversa */
+  const [compactadoAte, setCompactadoAte] = useState<number | null>(null);
+  /* o painel pediu "nova conversa": limpa a tela (sem tocar no histórico guardado) */
+  const resetRef = useRef(resetSinal);
+  useEffect(() => {
+    if (resetSinal === resetRef.current) return;
+    resetRef.current = resetSinal;
+    limparConversa(chave);
+    setCompactadoAte(null);
+  }, [resetSinal, chave]);
+
+  /* o estado vivo aprende a qual conversa pertence (todo turno leva conversa_id) */
+  useEffect(() => {
+    definirConversa(chave, conversaId ?? null);
+  }, [chave, conversaId]);
+  /* o App é avisado quando um turno termina de gravar (a lista lateral recarrega) */
+  const fimRef = useRef<() => void>(() => {});
+  fimRef.current = onTurnoFim;
   const [snap, setSnap] = useState<Estado>(() => estado(chave));
   /* v3.19: o usuário escolhe qual provedor (e qual modelo) responde esta conversa */
   const [provedores, setProvedores] = useState<Provedor[]>([]);
@@ -720,7 +758,22 @@ export function Chat({
 
   const carregarHistorico = useCallback(async () => {
     try {
-      const h = await get<ChatHistorico>("/chat?" + qs({ memoria, ...(tenantParam ? { tenant: tenantParam } : {}) }));
+      /* v3.81: a conversa é um objeto — abrir pelo id. Sem id (rascunho) a tela começa vazia;
+         servidor antigo (404) cai no histórico por gaveta. */
+      let h: ChatHistorico;
+      if (conversaId) {
+        try {
+          const r = await abrirConversa(conversaId, { tenant: tenantParam, limit: 200 });
+          h = { tenant: r.conversa.memoria ? escopo.tenant : escopo.tenant, memoria, mensagens: r.mensagens as unknown as ChatHistorico["mensagens"] };
+          setCompactadoAte(r.conversa.compactado_ate ?? null);
+        } catch {
+          h = await get<ChatHistorico>("/chat?" + qs({ memoria, ...(tenantParam ? { tenant: tenantParam } : {}) }));
+          setCompactadoAte(null);
+        }
+      } else {
+        h = { tenant: escopo.tenant, memoria, mensagens: [] };
+        setCompactadoAte(null);
+      }
       const linhas: Linha[] = [];
       for (const m of h.mensagens) {
         const trilha = (m.rastro ?? []) as SegmentoRastro[];
@@ -774,7 +827,7 @@ export function Chat({
       /* servidor antigo ou rede caída agora: nada a readotar */
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chave, memoria, tenantParam, toast]);
+  }, [chave, memoria, tenantParam, conversaId, toast]);
 
   useEffect(() => {
     void carregarHistorico();
@@ -1019,6 +1072,8 @@ export function Chat({
         if (idTarefa) dados = await bombearTarefa(idTarefa, onEvent, pedido.tenant);
       }
       const d = (dados ?? {}) as Record<string, unknown>;
+      /* v3.81: o turno gravou (a conversa pode ter nascido agora) — a lista lateral atualiza */
+      if (d.resposta || d.conversa_id) fimRef.current();
       const aviso = textoCompacto(d.compactacao as Compactacao | undefined);
       if (aviso) d.compacto = aviso;
       if (d.resposta) vivoRef.current();
@@ -1272,17 +1327,6 @@ export function Chat({
     if (typeof id === "string") cancelar(chave, id);
   }
 
-  async function limpar() {
-    if (!confirm("apagar a conversa desta gaveta?")) return;
-    try {
-      await del("/chat?" + qs({ memoria, ...(tenantParam ? { tenant: tenantParam } : {}) }));
-      limparConversa(chave);
-      toast("conversa apagada", "sucesso");
-    } catch (e) {
-      toast("apagar: " + (e as Error).message, "erro");
-    }
-  }
-
   const semProvider = provider && !provider.configurado;
   const semFerramenta = provider && provider.configurado && !provider.mcp_interno;
   const naFila = snap.fila.length;
@@ -1318,6 +1362,32 @@ export function Chat({
         >
           ☰
         </button>
+        <button
+          id="chatConversasCelular"
+          className="chat-menu-celular chat-acao"
+          aria-label="abrir conversas"
+          title="conversas"
+          onClick={onAbrirConversas}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 5h18M3 12h18M3 19h12" />
+          </svg>
+        </button>
+        {/* v3.81: o contexto da conversa (gaveta + modelo) veio da lateral para cá, em pílulas */}
+        <label className="chat-chip" title="gaveta de documentos desta conversa">
+          <span className="chat-chip-rot">gaveta</span>
+          <select value={memoria} onChange={(e) => onTrocarGaveta(e.target.value)} aria-label="gaveta">
+            {gavetas.map((g) => (
+              <option key={g.memoria} value={g.memoria}>
+                {g.fixada ? "📌 " : ""}
+                {g.rotulo}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="chat-chip chat-chip-modelo" title={provider?.modelo ?? "sem modelo"}>
+          <span className="chat-chip-rot">modelo</span> {provider?.modelo ?? "—"}
+        </span>
         <span className="flex-1" />
         <div className="chat-ajustes" ref={ajustesRef}>
           <button
@@ -1391,21 +1461,8 @@ export function Chat({
             </div>
           )}
         </div>
-        {/* v3.31.1 (dono, 27/10): o piso tem "nova conversa" (ação do dia a dia) e o
-            popover virou "⚙ ferramentas" (provider/modelo + exportar). */}
-        <button
-          id="chatNovaConversa"
-          className="chat-nova"
-          title="apagar esta conversa e recomeçar do zero"
-          aria-label="nova conversa"
-          onClick={() => void limpar()}
-        >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z" />
-            <path d="M13 8v6M10 11h6" />
-          </svg>
-          <span className="chat-nova-rotulo">nova conversa</span>
-        </button>
+        {/* v3.81.1 (dono, 27/11): o "nova conversa" daqui saiu — a coluna de conversas já
+            tem o botão, e dois botões iguais na mesma tela confundem. */}
       </div>
 
       {semProvider && (
@@ -1466,9 +1523,27 @@ export function Chat({
               </div>
             )
           )}
-          {msgs.map((m, i) => (
+          {msgs.map((m, i) => {
+            /* v3.81: a marca de compactação fica na costura — acima dela, o que virou resumo;
+               abaixo, o que ainda está verbatim no contexto. */
+            const sid = m.sid;
+            const costura =
+              compactadoAte !== null &&
+              sid !== undefined &&
+              sid > compactadoAte &&
+              !(msgs[i - 1]?.sid !== undefined && (msgs[i - 1].sid as number) > compactadoAte);
+            return (
+            <Fragment key={m.id ?? i}>
+            {costura && (
+              <div className="marca-compactacao" id="marcaCompactacao">
+                <span>
+                  … {msgs.filter((x) => x.sid !== undefined && (x.sid as number) <= compactadoAte).length} mensagens
+                  anteriores compactadas aqui — resumo mantido no contexto, originais seguem nesta conversa
+                </span>
+                <button onClick={() => area.current?.scrollTo({ top: 0, behavior: "smooth" })}>ver originais</button>
+              </div>
+            )}
             <div
-              key={m.id ?? i}
               className={"msg " + (m.papel === "user" ? "msg-eu" : "msg-ia") + (m.falha ? " msg-falha" : "")}
               onClick={(e) => {
                 /* v3.22 (preview aprovado): as ações (copiar/regenerar/editar) ficam invisíveis
@@ -1690,7 +1765,9 @@ export function Chat({
                 </div>
               )}
             </div>
-          ))}
+            </Fragment>
+            );
+          })}
           {rodando && !msgs.some((m) => m.escrevendo) && (
             <div className="msg msg-ia">
               pensando… {espera}s
