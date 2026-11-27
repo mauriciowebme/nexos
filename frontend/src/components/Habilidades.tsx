@@ -24,6 +24,18 @@ type Habilidade = {
 
 const VAZIA = { nome: "", quando_usar: "", corpo: "", favorita: false };
 
+/** mesma regra da busca do servidor: sem acento e sem caixa (a tela filtra na hora, sem ir à rede) */
+const COM_ACENTO = "áàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ";
+const SEM_ACENTO = "aaaaaeeeeiiiiooooouuuucnAAAAAEEEEIIIIOOOOOUUUUCN";
+function achatar(txt: string): string {
+  let saida = "";
+  for (const c of txt) {
+    const i = COM_ACENTO.indexOf(c);
+    saida += i >= 0 ? SEM_ACENTO[i] : c.toLowerCase();
+  }
+  return saida;
+}
+
 export function Habilidades() {
   const [lista, setLista] = useState<Habilidade[]>([]);
   const [carregando, setCarregando] = useState(true);
@@ -32,6 +44,7 @@ export function Habilidades() {
   const [form, setForm] = useState<typeof VAZIA>(VAZIA);
   const [editando, setEditando] = useState<number | null>(null);
   const [confirmando, setConfirmando] = useState<number | null>(null);
+  const [busca, setBusca] = useState("");
 
   async function carregar() {
     setCarregando(true);
@@ -95,6 +108,16 @@ export function Habilidades() {
       setErro((e as Error).message || "não consegui remover");
     }
   }
+
+  /* mesma regra do servidor: cada palavra precisa aparecer (E, não a frase inteira) */
+  const palavras = achatar(busca.trim()).split(/\s+/).filter((w) => w.length >= 2);
+  const filtradas = palavras.length
+    ? lista.filter((h) => {
+        const todo = achatar(`${h.nome} ${h.quando_usar} ${h.corpo}`);
+        return palavras.every((w) => todo.includes(w));
+      })
+    : lista;
+  const termo = palavras.join(" ");
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-5" id="telaHabilidades">
@@ -165,8 +188,35 @@ export function Habilidades() {
       </form>
 
       <div className="flex max-w-[720px] flex-col gap-2">
-        <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.08em] text-txt3">
-          minhas habilidades <span className="text-txt3">· {lista.length}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.08em] text-txt3">
+            minhas habilidades{" "}
+            <span className="text-txt3">
+              · {termo ? `${filtradas.length} de ${lista.length}` : lista.length}
+            </span>
+          </div>
+          <span className="flex-1" />
+          <div className="relative flex items-center">
+            <input
+              id="habBusca"
+              type="search"
+              value={busca}
+              placeholder="buscar por assunto, nome ou pedido"
+              className="w-[240px] rounded-[9px] border border-borda bg-bg px-2.5 py-[6px] pr-7 text-[12.5px] text-txt outline-none focus:border-bordaforte"
+              onChange={(e) => setBusca(e.target.value)}
+            />
+            {busca && (
+              <button
+                type="button"
+                id="habBuscaLimpar"
+                className="absolute right-1.5 text-[13px] leading-none text-txt3 hover:text-txt"
+                title="limpar busca"
+                onClick={() => setBusca("")}
+              >
+                ×
+              </button>
+            )}
+          </div>
         </div>
         {carregando && <p className="text-[12.5px] text-txt3">carregando…</p>}
         {!carregando && lista.length === 0 && (
@@ -174,7 +224,12 @@ export function Habilidades() {
             nenhuma ainda. Escreva o pedido acima, com as suas palavras — é ele que vai para o agente.
           </p>
         )}
-        {lista.map((h) => (
+        {!carregando && lista.length > 0 && filtradas.length === 0 && (
+          <p id="habBuscaVazia" className="rounded-[10px] border border-dashed border-borda px-3 py-4 text-[12.5px] text-txt3">
+            nenhuma habilidade bate com “{busca.trim()}”.
+          </p>
+        )}
+        {filtradas.map((h) => (
           <div key={h.id} className="rounded-[10px] border border-borda bg-sup px-3 py-2.5" data-habilidade={h.nome}>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[13.5px] text-txt">{h.nome}</span>
