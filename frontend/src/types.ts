@@ -116,6 +116,7 @@ export type Vista =
   | "jobs"
   | "maquinas"
   | "mcp"
+  | "habilidades"
   | "config"
   | "arquivos"
   | "editor";

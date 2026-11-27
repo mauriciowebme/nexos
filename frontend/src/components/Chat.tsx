@@ -205,11 +205,18 @@ const RASTRO_CHAVE = "nexos:rastro-expandido";
 
 /* v3.22 (preview aprovado): exemplos do estado vazio — textos literais da maquete aprovada.
    O clique preenche o campo com o `t`; o `sub` é só a legenda do chip. */
-const EXEMPLOS_VAZIO = [
-  { t: "o que anotei sobre o Nexos essa semana?", sub: "busca na memória" },
-  { t: "as decisões que tomamos sobre provider", sub: "resumo de decisões" },
-  { t: "resuma a conversa de ontem com o cliente", sub: "resumo de conversa" },
-  { t: "quais pendências ficaram abertas?", sub: "check de pendências" },
+/* v3.84 (dono, 27/11): os cartões mostram o que o Nexos SABE FAZER, não quatro jeitos
+   de perguntar a mesma coisa. Escolhidos por ele: (1) memória e (2) pesquisa web rodam
+   SÓ no servidor — funcionam com ou sem cliente pareado; (3) planilha/CSV sai do sandbox
+   e volta como anexo (openpyxl instalado sob demanda); (4) é o teste do cliente: toca a
+   máquina pareada e mostra se ela está viva. */
+type ExemploCartao = { t: string; sub: string; pedido?: string };
+
+const EXEMPLOS_VAZIO: ExemploCartao[] = [
+  { t: "o que meus documentos dizem sobre isso?", sub: "busca na memória" },
+  { t: "pesquise na web e monte um painel html com links e datas", sub: "pesquisa web + tela" },
+  { t: "monta uma planilha com o que eu mandar", sub: "planilha ou CSV" },
+  { t: "testa o cliente da minha máquina", sub: "máquinas pareadas" },
 ] as const;
 
 /* As ferramentas internas do nexos têm nome em inglês no MCP; a linha do rastro fala como a
@@ -217,6 +224,8 @@ const EXEMPLOS_VAZIO = [
    nome que o servidor deu — inventar rótulo alheio seria mentira. */
 const ROTULOS_FERRAMENTA: Record<string, string> = {
   health: "a saúde do servidor",
+  gerir_habilidades: "as habilidades da conta",
+  ler_habilidade: "a habilidade",
   search: "a busca semântica",
   ingest: "a ingestão",
   ingest_status: "o estado da ingestão",
@@ -281,7 +290,7 @@ const VERBO_FERRAMENTA: Record<string, string> = {
   listar_arquivos: "Listando", listar_usuarios: "Listando", maquinas_online: "Listando",
   processos: "Listando", janelas: "Listando", servicos: "Listando",
   ler_arquivo: "Lendo", get_file: "Baixando", analisar_imagem: "Analisando",
-  web_open: "Abrindo",
+  web_open: "Abrindo", gerir_habilidades: "Organizando", ler_habilidade: "Lendo",
 };
 
 function verboFerramenta(nome: string): string {
@@ -636,6 +645,9 @@ export function Chat({
   /* v3.31.1 (dono, 27/10): o popover "⚙ ferramentas" guarda provider/modelo e exportar;
      no piso ficam engrenagem, "nova conversa", campo, mic e enviar. */
   const [ajustesAberto, setAjustesAberto] = useState(false);
+  /* v3.84: os cartões da tela inicial vêm das HABILIDADES favoritas da conta; sem nenhuma,
+     fica o conjunto padrão do código (a home nunca abre vazia). */
+  const [cartoes, setCartoes] = useState<ExemploCartao[]>(EXEMPLOS_VAZIO);
   const ajustesRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!ajustesAberto) return;
@@ -681,6 +693,23 @@ export function Chat({
     localStorage.setItem(RASTRO_CHAVE, novo);
     setRastroPref(novo);
   }
+
+  useEffect(() => {
+    get<{ habilidades: { nome: string; quando_usar: string }[] }>("/habilidades?favoritas=1")
+      .then((r) => {
+        const lista = r.habilidades ?? [];
+        if (!lista.length) return;
+        const favoritas = lista.map((h) => ({
+          t: h.nome,
+          sub: h.quando_usar || "habilidade",
+          pedido: `use a habilidade "${h.nome}"`,
+        }));
+        /* favorita primeiro; se sobrar espaço, completa com os padrão — home com um cartão
+           só parece tela quebrada, e a lista inteira vive na tela Habilidades. */
+        setCartoes([...favoritas, ...EXEMPLOS_VAZIO].slice(0, 4));
+      })
+      .catch(() => undefined);
+  }, []);
 
   const tenantParam = operador && escopo.tenant ? escopo.tenant : undefined;
   /* v3.81: a chave do estado vivo é a CONVERSA (id). Sem id ainda, é o rascunho da gaveta —
@@ -1373,8 +1402,8 @@ export function Chat({
           ☰
         </button>
         {/* v3.81: o contexto da conversa (gaveta + modelo) veio da lateral para cá, em pílulas */}
-        <label className="chat-chip" title="gaveta de documentos desta conversa">
-          <span className="chat-chip-rot">gaveta</span>
+        <label className="chat-ctx" title="gaveta de documentos desta conversa">
+          <span className="chat-ctx-rot">gaveta</span>
           <select value={memoria} onChange={(e) => onTrocarGaveta(e.target.value)} aria-label="gaveta">
             {gavetas.map((g) => (
               <option key={g.memoria} value={g.memoria}>
@@ -1384,8 +1413,8 @@ export function Chat({
             ))}
           </select>
         </label>
-        <span className="chat-chip chat-chip-modelo" title={provider?.modelo ?? "sem modelo"}>
-          <span className="chat-chip-rot">modelo</span> {provider?.modelo ?? "—"}
+        <span className="chat-ctx chat-ctx-modelo" title={provider?.modelo ?? "sem modelo"}>
+          <span className="chat-ctx-rot">modelo</span> {provider?.modelo ?? "—"}
         </span>
         <span className="flex-1" />
         <div className="chat-ajustes" ref={ajustesRef}>
@@ -1495,12 +1524,12 @@ export function Chat({
                 <p className="chat-vazio-titulo">"Boa. Sua memória está aqui."</p>
                 <p className="chat-vazio-sub">"Pergunte com suas palavras, ou comece por uma destas:"</p>
                 <div className="chat-chips">
-                  {EXEMPLOS_VAZIO.map((ex) => (
+                  {cartoes.map((ex) => (
                     <button
                       key={ex.t}
                       className="chat-chip"
                       onClick={() => {
-                        setPergunta(ex.t);
+                        setPergunta(ex.pedido ?? ex.t);
                         requestAnimationFrame(() => {
                           campoRef.current?.focus();
                           ajustarAltura(campoRef.current as HTMLTextAreaElement);

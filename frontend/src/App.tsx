@@ -11,6 +11,7 @@ import { criarConversa, listarConversas } from "./lib/conversas";
 import { Config, SECOES_CFG, type Aba } from "./components/Config";
 import { Maquinas } from "./components/Maquinas";
 import { Mcp } from "./components/Mcp";
+import { Habilidades } from "./components/Habilidades";
 import { get, qs } from "./services/api";
 import type { GavetasResp, HealthResp, ProviderResp, Vista } from "./types";
 
@@ -24,6 +25,8 @@ const IC = {
   painel: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
   maquinas: <><rect x="2.5" y="4" width="19" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
   mcp: <><path d="M9 3v6M15 3v6M7 9h10v3a5 5 0 0 1-10 0V9zM12 17v4" /></>,
+  /* estrela/raio de atalho: a mesma linguagem de traço do resto */
+  habilidades: <><path d="M12 3l2.1 5.4 5.4 2.1-5.4 2.1L12 18l-2.1-5.4L4.5 10.5l5.4-2.1z" /></>,
   arquivos: <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.2a2 2 0 0 1 1.6.8l.9 1.2h7.3A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9z" />,
   gavetas: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /></>,
   config: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></>,
@@ -35,6 +38,8 @@ const MENU: { id: Vista; rotulo: string; icone: keyof typeof IC }[] = [
   { id: "maquinas", rotulo: "Máquinas", icone: "maquinas" },
   /* v3.36 — onde o usuário vê que a conta dele pode ser servidor MCP e escolhe o que liberar */
   { id: "mcp", rotulo: "MCP", icone: "mcp" },
+  /* v3.84: os atalhos da conta — o que for favorito vira cartão na tela inicial do chat */
+  { id: "habilidades", rotulo: "Habilidades", icone: "habilidades" },
   /* v3.48 (T050): Buscar e Fila viraram DENTRO da tela Arquivos (aba RAG) */
   { id: "arquivos", rotulo: "Arquivos", icone: "arquivos" },
   { id: "gavetas", rotulo: "Gavetas", icone: "gavetas" },
@@ -47,7 +52,7 @@ const DENTRO_DO_CAMINHO = new Set<Vista>(["gavetas", "arquivos", "editor"]);
    O app é servido na raiz e o hash diz onde o usuário está: sobrevive ao F5,
    funciona no voltar/avançar e o link pode ser copiado com a tela certa. */
 const VISTAS_TODAS: Vista[] = [
-  "chat", "painel", "maquinas", "mcp", "buscar", "jobs", "gavetas", "config", "arquivos", "editor",
+  "chat", "painel", "maquinas", "mcp", "habilidades", "buscar", "jobs", "gavetas", "config", "arquivos", "editor",
 ];
 
 function vistaDoHash(): Vista | null {
@@ -61,7 +66,7 @@ function vistaDoHash(): Vista | null {
    Chat, Buscar e Fila. Painel, Usuários/Gavetas e Configurações são do admin.
    A parede de verdade está na API (dashboard/config gravam exigem operador);
    o filtro aqui é a consequência visual, não a segurança. */
-const VISTAS_DO_COMUM: Vista[] = ["chat", "maquinas", "mcp", "arquivos"];
+const VISTAS_DO_COMUM: Vista[] = ["chat", "maquinas", "mcp", "habilidades", "arquivos"];
 
 const TITULOS: Record<Vista, string> = {
   painel: "Painel",
@@ -73,6 +78,7 @@ const TITULOS: Record<Vista, string> = {
   jobs: "Fila",
   maquinas: "Máquinas",
   mcp: "MCP",
+  habilidades: "Habilidades",
   config: "Configurações",
 };
 
@@ -569,6 +575,7 @@ export default function App() {
 
           {vista === "maquinas" && <Maquinas />}
           {vista === "mcp" && <Mcp versao={versao} />}
+          {vista === "habilidades" && <Habilidades />}
           {vista === "config" && (
             <Config
               nome={nome}
