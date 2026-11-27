@@ -1194,7 +1194,9 @@ export type SegmentoRastro =
   | { tipo: "interrupcao"; texto: string; em?: number }
   /** v3.74/v3.77 (T056/T057): o GUARDA DO LAÇO falou — chamada repetida detectada ou saída
      aparada por orçamento de contexto. Linha da trilha, visível para o dono. */
-  | { tipo: "guarda"; texto: string; em?: number };
+  | { tipo: "guarda"; texto: string; em?: number }
+  /** v3.82 (T066): o provedor devolveu resposta vazia e o turno foi repetido sozinho. */
+  | { tipo: "aviso"; texto: string; em?: number };
 
 /** Evento do chat com streaming (rota /chat/stream). */
 export type EventoChat =
@@ -1550,6 +1552,9 @@ export async function responderChat(
   /** v3.42: trechos já fechados quando uma fala no meio obrigou mais uma rodada */
   const partes: string[] = [];
   let rodadas = 0;
+  /* v3.82 (T066): o provedor já devolveu `finish=stop` com ZERO caractere; uma repetição
+     automática resolve o caso intermitente sem pedir nada à pessoa. */
+  let repetiuVazio = false;
   let aviso: string | null = null;
   /* v3.18: `emitido` é o texto JÁ MOSTRADO da rodada em curso (zera a cada rodada com
      ferramenta, porque rascunho de rodada não é resposta) — é o que sobrevive ao "parar".
@@ -1734,8 +1739,25 @@ export async function responderChat(
         visao: imagens,
       });
     } catch (e) {
-      /* v3.67: resposta vazia não é erro de servidor — o turno segue e a tela mostra o aviso */
-      if (e instanceof RespostaVazia) break;
+      /* v3.67: resposta vazia não é erro de servidor. v3.82 (T066): antes de avisar a pessoa,
+         o turno é repetido UMA vez — medido em 27/11 no chat do admin: `finish=stop`, 31 tokens
+         de saída e zero caractere, enquanto as 8 chamadas seguintes com o MESMO provedor
+         voltaram com texto. Repetir é honesto; pedir para a pessoa tocar não era. */
+      if (e instanceof RespostaVazia) {
+        if (!repetiuVazio && !chamadas.length) {
+          repetiuVazio = true;
+          log("resposta vazia do provedor — repetindo o turno uma vez, com ordem firme");
+          rastro.push({ tipo: "aviso", texto: "o provedor devolveu resposta vazia — repeti o pedido uma vez", em: decorrido() });
+          mensagens.push({
+            role: "user",
+            content:
+              "Sua última resposta chegou VAZIA (nenhum caractere). Repita agora a resposta em texto normal, " +
+              "sem chamar ferramenta, sem raciocínio longo — responda direto.",
+          });
+          continue;
+        }
+        break;
+      }
       throw e;
     }
     /* v3.73 (T055): janela de ESCRITA desta rodada — nunca o turno inteiro. Se a rodada não
@@ -1829,7 +1851,23 @@ export async function responderChat(
         }
         continue;
       }
-      texto = partes.length ? [...partes, textoRodada].filter(Boolean).join("\n\n") : textoRodada;
+      const respostaDesteTurno = (partes.length ? [...partes, textoRodada].filter(Boolean).join("\n\n") : textoRodada).trim();
+      /* v3.82 (T066): resposta vazia não vira aviso na cara da pessoa antes de uma segunda
+         chance. Medido em 27/11 no chat do admin: 31 tokens de saída, zero caractere,
+         `finish=stop`; as 8 chamadas seguintes com o mesmo provedor voltaram com texto. */
+      if (!respostaDesteTurno && !repetiuVazio) {
+        repetiuVazio = true;
+        log("resposta vazia do provedor — repetindo o turno uma vez, com ordem firme");
+        rastro.push({ tipo: "aviso", texto: "o provedor devolveu resposta vazia — repeti o pedido uma vez", em: Date.now() - inicio });
+        mensagens.push({
+          role: "user",
+          content:
+            "Sua última resposta chegou VAZIA (nenhum caractere). Repita agora a resposta em texto normal, " +
+            "sem chamar ferramenta, sem raciocínio longo — responda direto.",
+        });
+        continue;
+      }
+      texto = respostaDesteTurno;
       break;
     }
     /* a rodada chamou ferramenta: o texto dela NÃO é a resposta — mas é FALA DE
@@ -2020,8 +2058,11 @@ export async function responderChat(
   if (!respostaLimpa) {
     const achado = ultimoResultadoTool(mensagens).trim();
     if (!chamadas.length && !achado) {
+      /* v3.82 (T066): UM aviso, não dois. A frase é a única coisa na bolha; raciocínio de
+         uma resposta que não saiu e a conta de tokens não são desenhados. */
       texto = "⚠️ o modelo não devolveu resposta desta vez — toque em **tentar de novo** (ou mande a mensagem outra vez).";
-      aviso = aviso ?? "o provedor devolveu resposta vazia";
+      aviso = null;
+      pensamento = "";
     } else {
       texto = achado
         ? `busquei, mas o modelo parou sem responder. O que a ferramenta achou: ${achado.slice(0, 600)}`
@@ -2037,6 +2078,9 @@ export async function responderChat(
   }
 
   const embrulho = empacotar(texto, aviso, false);
+  /* v3.82 (T066): turno que terminou SEM resposta escrita não mostra velocidade nem conta de
+     tokens — não houve resposta para medir, e "31 tok" embaixo do aviso só confunde. */
+  if (!respostaLimpa && !chamadas.length) delete (embrulho as { custo?: unknown }).custo;
   await gravarMensagens(tenant, conversaId, memoria, pergunta, texto, chamadas, falas, pensamento.trim(), rastro, [...fontes], cfg.provedor, cfg.modelo, telas, anexos, Date.now() - inicio, anexosDoUsuario, embrulho.custo);
   /* v3.81: o turno fecha a conversa (data sobe) e, se a compactação agiu, a marca é gravada
      com o id da última mensagem que o resumo cobriu — é ela que a tela desenha. */
