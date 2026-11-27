@@ -379,7 +379,7 @@ test("nexos v2 — suíte completa", async (t) => {
     f.fechar("v1.8");
   });
 
-  await bloco(t, "MCP: JSON-RPC stateless com as 53 tools", async () => {
+  await bloco(t, "MCP: JSON-RPC stateless com as 55 tools", async () => {
     const f = fiscal();
     const H = { key: TESTKEY };
     const rpc = (id: unknown, method: string, params?: unknown, key: string | null = TESTKEY) =>
@@ -449,11 +449,13 @@ test("nexos v2 — suíte completa", async (t) => {
       "enviar_para_maquina",
       /* v3.81: o modelo acha e lê conversa antiga do chat */
       "buscar_conversas", "ler_conversa",
+      /* v3.84: habilidades da conta (atalhos) — gerir + ler sob demanda */
+      "gerir_habilidades", "ler_habilidade",
     ].sort();
     /* v3.36 — a lista passou a dizer a verdade da CONTA: as 5 de operador saem para o comum */
     const SO_OPERADOR_336 = ["listar_usuarios", "criar_usuario", "apagar_usuario", "esquecimento", "gerir_mcp"];
     const ESPERADAS_COMUM = ESPERADAS.filter((n) => !SO_OPERADOR_336.includes(n)).sort();
-    f.check("tools/list da conta comum traz as 53 (as 5 de operador ficam fora)", JSON.stringify(nomes) === JSON.stringify(ESPERADAS_COMUM), `${nomes.length}: ${nomes.filter((n: string) => !ESPERADAS_COMUM.includes(n)).join(", ")}`);
+    f.check("tools/list da conta comum traz as 55 (as 5 de operador ficam fora)", JSON.stringify(nomes) === JSON.stringify(ESPERADAS_COMUM), `${nomes.length}: ${nomes.filter((n: string) => !ESPERADAS_COMUM.includes(n)).join(", ")}`);
 
     r = await rpc(5, "tools/call", { name: "health" }, null);
     f.check("tools/call sem Bearer -> 401", r.status === 401 && "error" in (r.json ?? {}), r.texto.slice(0, 150));
@@ -649,12 +651,12 @@ test("nexos v2 — suíte completa", async (t) => {
     r = await call("PATCH", "/config/mcp/usuarios", { key: OPKEY, corpo: { ativo: false } });
     f.check("operador desliga o MCP das contas", r.status === 200 && r.json?.usuarios_habilitado === false, r.texto.slice(0, 160));
     f.check("com o MCP desligado a conta comum não vê ferramenta nenhuma", (await lista(TESTKEY)).length === 0, (await lista(TESTKEY)).length);
-    f.check("o operador continua entrando (para poder reverter)", (await lista(OPKEY)).length === 59, (await lista(OPKEY)).length);
+    f.check("o operador continua entrando (para poder reverter)", (await lista(OPKEY)).length === 61, (await lista(OPKEY)).length);
     r = await call("POST", "/mcp", { key: TESTKEY, corpo: { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "health", arguments: {} } } });
     f.check("chamada da conta comum com MCP desligado: 403 com o motivo", r.status === 403 && /desligado/.test(r.texto), r.texto.slice(0, 160));
 
     r = await call("PATCH", "/config/mcp/usuarios", { key: OPKEY, corpo: { ativo: true } });
-    f.check("religado, a conta comum volta a ver as 53", r.status === 200 && (await lista(TESTKEY)).length === 53, (await lista(TESTKEY)).length);
+    f.check("religado, a conta comum volta a ver as 53", r.status === 200 && (await lista(TESTKEY)).length === 55, (await lista(TESTKEY)).length);
     r = await call("GET", "/config/mcp", { key: OPKEY });
     f.check("a config do admin mostra o interruptor", r.json?.usuarios_habilitado === true, JSON.stringify(r.json).slice(0, 120));
 
@@ -5414,6 +5416,117 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     sql(`delete from chat_mensagens where conversa_id in (${idA},${idB})`);
     sql(`delete from conversas where id in (${idA},${idB})`);
     f.fechar("busca-3.83");
+  });
+
+  /* v3.84 — HABILIDADES: o usuário escreve o atalho, a home mostra o favorito e o agente lê
+     o corpo sob demanda. Contrato de cada rota + a porta MCP (gerir_habilidades e ler_habilidade). */
+  await bloco(t, "v3.84 — habilidades da conta: CRUD, favorito na home e leitura pelo agente", async () => {
+    const f = fiscal();
+    const NOME = "suite82-atalho-noticias";
+
+    /* 1. a lista responde (vazia ou não: o que vale é o formato) */
+    let r = await call("GET", "/habilidades", { key: TESTKEY });
+    f.check(
+      "v3.84 GET /habilidades responde lista e total",
+      r.status === 200 && Array.isArray(r.json?.habilidades) && r.json?.total === (r.json?.habilidades ?? []).length,
+      `${r.status} ${r.texto.slice(0, 100)}`,
+    );
+
+    /* 2. sem corpo não cria (422, não 500) */
+    r = await call("POST", "/habilidades", { key: TESTKEY, corpo: { nome: NOME, quando_usar: "x" } });
+    f.check("v3.84 criar sem corpo -> 422", r.status === 422, `${r.status} ${r.texto.slice(0, 120)}`);
+
+    /* 3. cria de verdade */
+    r = await call("POST", "/habilidades", {
+      key: TESTKEY,
+      corpo: {
+        nome: NOME,
+        quando_usar: "quando pedirem noticias com fontes",
+        corpo: "pesquise na web as noticias de hoje sobre IA local, abra as 3 melhores e monte um painel em HTML com titulo, data e link",
+      },
+    });
+    const idHab = Number(r.json?.id ?? 0);
+    f.check(
+      "v3.84 POST /habilidades cria (201) com nome e corpo",
+      r.status === 201 && idHab > 0 && r.json?.nome === NOME && String(r.json?.corpo).includes("painel em HTML"),
+      `${r.status} ${r.texto.slice(0, 140)}`,
+    );
+
+    /* 4. aparece na lista da conta */
+    r = await call("GET", "/habilidades", { key: TESTKEY });
+    const naLista = (r.json?.habilidades ?? []).find((h: any) => h.nome === NOME);
+    f.check("v3.84 a habilidade aparece na lista da conta", Boolean(naLista) && naLista.id === idHab, r.texto.slice(0, 140));
+
+    /* 5. abre pelo id */
+    r = await call("GET", `/habilidades/${idHab}`, { key: TESTKEY });
+    f.check("v3.84 GET /habilidades/:id devolve o corpo escrito", r.status === 200 && String(r.json?.corpo).includes("IA local"), `${r.status} ${r.texto.slice(0, 120)}`);
+
+    /* 6. edita (o pedido muda e o corpo é preservado quando não vem no corpo do PATCH) */
+    r = await call("PATCH", `/habilidades/${idHab}`, { key: TESTKEY, corpo: { quando_usar: "quando pedirem noticias de IA" } });
+    f.check(
+      "v3.84 PATCH troca só o campo enviado",
+      r.status === 200 && r.json?.quando_usar === "quando pedirem noticias de IA" && String(r.json?.corpo).includes("painel em HTML"),
+      `${r.status} ${r.texto.slice(0, 140)}`,
+    );
+
+    /* 7. favoritar é o que liga o cartão da home */
+    r = await call("POST", `/habilidades/${idHab}/favorita`, { key: TESTKEY, corpo: { favorita: true } });
+    f.check("v3.84 favoritar responde favorita=true", r.status === 200 && r.json?.favorita === true, `${r.status} ${r.texto.slice(0, 120)}`);
+    r = await call("GET", "/habilidades?favoritas=1", { key: TESTKEY });
+    f.check(
+      "v3.84 GET ?favoritas=1 traz a marcada (e só marcadas)",
+      (r.json?.habilidades ?? []).every((h: any) => h.favorita === true) && (r.json?.habilidades ?? []).some((h: any) => h.nome === NOME),
+      r.texto.slice(0, 160),
+    );
+
+    /* 8. o agente lê o corpo pela tool (é o que faz a habilidade valer de verdade) */
+    const mcpHab = async (nome: string, args: Record<string, unknown>) => {
+      const x = await call("POST", "/mcp", {
+        key: TESTKEY,
+        corpo: { jsonrpc: "2.0", id: 95, method: "tools/call", params: { name: nome, arguments: args } },
+      });
+      try {
+        return { status: x.status, dados: JSON.parse(String(x.json?.result?.content?.[0]?.text ?? "{}")) };
+      } catch {
+        return { status: x.status, dados: {} };
+      }
+    };
+    let m = await mcpHab("ler_habilidade", { nome: NOME });
+    f.check(
+      "v3.84 ler_habilidade devolve o corpo completo",
+      m.status === 200 && String(m.dados?.corpo).includes("IA local") && m.dados?.nome === NOME,
+      JSON.stringify(m.dados).slice(0, 160),
+    );
+
+    /* 9. o agente administra: listar e criar pela mesma tool */
+    m = await mcpHab("gerir_habilidades", { acao: "listar" });
+    f.check(
+      "v3.84 gerir_habilidades listar mostra a habilidade",
+      m.status === 200 && (m.dados?.habilidades ?? []).some((h: any) => h.nome === NOME),
+      JSON.stringify(m.dados).slice(0, 160),
+    );
+    m = await mcpHab("gerir_habilidades", {
+      acao: "criar",
+      nome: "suite82-criada-pelo-agente",
+      quando_usar: "teste da tool",
+      corpo: "diga apenas ok",
+    });
+    const idAgente = Number((m.dados as any)?.id ?? 0);
+    f.check("v3.84 gerir_habilidades cria pela tool", m.status === 200 && idAgente > 0, JSON.stringify(m.dados).slice(0, 140));
+    m = await mcpHab("gerir_habilidades", { acao: "remover", alvo: "suite82-criada-pelo-agente" });
+    f.check("v3.84 gerir_habilidades remove pela tool", m.status === 200 && idAgente > 0, JSON.stringify(m.dados).slice(0, 140));
+
+    /* 10. isolamento: habilidade é texto da conta, outra conta não abre */
+    r = await call("GET", `/habilidades/${idHab}`, { key: OPKEY });
+    f.check("v3.84 outra conta não abre a habilidade (404)", r.status === 404, `${r.status} ${r.texto.slice(0, 120)}`);
+
+    /* 11. remover apaga de verdade e o id morre */
+    r = await call("DELETE", `/habilidades/${idHab}`, { key: TESTKEY });
+    f.check("v3.84 DELETE remove e devolve o nome", r.status === 200 && r.json?.removida === NOME, `${r.status} ${r.texto.slice(0, 120)}`);
+    r = await call("GET", `/habilidades/${idHab}`, { key: TESTKEY });
+    f.check("v3.84 depois de remover, GET /:id da 404", r.status === 404, `${r.status}`);
+
+    f.fechar("habilidades-3.84");
   });
 
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {
