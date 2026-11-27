@@ -69,7 +69,9 @@ export type SegmentoRastro =
   /** v3.43: a fala que a pessoa mandou NO MEIO do turno — mora na trilha, no ponto em que chegou */
   | { tipo: "interrupcao"; texto: string; em?: number }
   /** v3.74 (T056/T057): o guarda do laço interveio (chamada repetida / saída virou arquivo) */
-  | { tipo: "guarda"; texto: string; em?: number };
+  | { tipo: "guarda"; texto: string; em?: number }
+  /** v3.82 (T066): o provedor devolveu resposta vazia e o turno foi repetido sozinho */
+  | { tipo: "aviso"; texto: string; em?: number };
 
 /** v3.44: arquivo que veio da máquina (print, imagem, log) e mora em `anexos` no servidor */
 export type AnexoArquivo = { id: string; nome: string; mime: string; bytes: number };

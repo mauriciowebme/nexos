@@ -15,6 +15,8 @@ type Props = {
   onSelecionar: (id: number) => void;
   onNova: () => void;
   onFechar?: () => void;
+  /** v3.82: atalho para o menu do app (o topo do chat tem um ☰ só, que abre esta gaveta) */
+  onAbrirMenu?: () => void;
 };
 
 const dia = (iso: string): string => String(iso ?? "").slice(0, 10);
@@ -39,7 +41,7 @@ function quandoCurto(iso: string): string {
   return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-export function Conversas({ tenant, operador, memoria, selecionada, recarga, onSelecionar, onNova, onFechar }: Props) {
+export function Conversas({ tenant, operador, memoria, selecionada, recarga, onSelecionar, onNova, onFechar, onAbrirMenu }: Props) {
   const { toast } = useToast();
   const [lista, setLista] = useState<ConversaMeta[]>([]);
   const [contagem, setContagem] = useState({ ativas: 0, arquivadas: 0 });
@@ -211,7 +213,15 @@ export function Conversas({ tenant, operador, memoria, selecionada, recarga, onS
       </div>
 
       <div className="conv-rodape">
-        {contagem.arquivadas > 0 ? `${contagem.ativas} ativas · ${contagem.arquivadas} arquivadas` : `${contagem.ativas} conversa${contagem.ativas === 1 ? "" : "s"}`}
+        <span>
+          {contagem.arquivadas > 0 ? `${contagem.ativas} ativas · ${contagem.arquivadas} arquivadas` : `${contagem.ativas} conversa${contagem.ativas === 1 ? "" : "s"}`}
+        </span>
+        {/* v3.82: o topo do chat tem UM ☰ só; o menu do app vem daqui, de dentro da gaveta */}
+        {onAbrirMenu && (
+          <button className="conv-menu-app" onClick={onAbrirMenu} aria-label="abrir menu do app" title="menu do app">
+            ☰ menu
+          </button>
+        )}
       </div>
     </aside>
   );

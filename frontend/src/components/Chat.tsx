@@ -437,6 +437,16 @@ function Rastro({
                 </div>
               );
             }
+            if (s.tipo === "aviso") {
+              /* v3.82 (T066): resposta vazia do provedor — o turno foi repetido sozinho.
+                 Fica na trilha (não na cara): aconteceu, foi tratado, a resposta chegou. */
+              return (
+                <div className="rastro-linha" key={`a${i}`} data-testid="rastroAviso">
+                  <i className="rastro-ponto rastro-ponto-amarelo" />
+                  <span>{s.texto}</span>
+                </div>
+              );
+            }
             if (s.tipo === "guarda") {
               /* v3.74 (T056/T057): o guarda do laço — o servidor percebeu que o modelo
                  repetiu a mesma chamada, ou que a saída grande foi aparada no teto do
@@ -570,7 +580,6 @@ export function Chat({
   provider,
   onProviderConfirmado,
   onIrConfig,
-  onAbrirMenu,
   onAbrirConversas,
   conversaId,
   onTurnoFim,
@@ -595,7 +604,6 @@ export function Chat({
    * pegou "não configurado" (o dono ligou o provider depois do login). */
   onProviderConfirmado: () => void;
   onIrConfig: () => void;
-  onAbrirMenu: () => void;
   /** v3.81: abre a coluna de conversas no celular (a lista vive em gaveta) */
   onAbrirConversas: () => void;
 }) {
@@ -1353,25 +1361,16 @@ export function Chat({
       {/* v3.61: a linha do topo existe em TODAS as larguras — no celular é a porta ☰,
            no desktop carrega só ⚙ ferramentas e nova conversa (o piso ficou só com a escrita). */}
       <div className="chat-topo">
+        {/* v3.82 (dono, 27/11): UM ☰ só. Ele abre a gaveta que tem o menu do app e as
+            conversas — antes eram dois hambúrgueres lado a lado no topo de 390 px. */}
         <button
           id="chatMenuCelular"
           className="chat-menu-celular chat-acao"
-          aria-label="abrir menu"
-          title="menu"
-          onClick={onAbrirMenu}
-        >
-          ☰
-        </button>
-        <button
-          id="chatConversasCelular"
-          className="chat-menu-celular chat-acao"
-          aria-label="abrir conversas"
-          title="conversas"
+          aria-label="abrir menu e conversas"
+          title="menu e conversas"
           onClick={onAbrirConversas}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M3 5h18M3 12h18M3 19h12" />
-          </svg>
+          ☰
         </button>
         {/* v3.81: o contexto da conversa (gaveta + modelo) veio da lateral para cá, em pílulas */}
         <label className="chat-chip" title="gaveta de documentos desta conversa">
@@ -1775,11 +1774,17 @@ export function Chat({
             </div>
           )}
           </div>
-          {/* botão para descer: aparece só quando você subiu para ler algo */}
+        </div>
+        {/* v3.16 — pé da conversa: "nova conversa" mudou de lado e desceu para a linha do
+            campo, oposto ao enviar (ação perto do dedo, nada de reset no topo). A dica de
+            teclado saiu da tela — vive no título (hover) do campo. */}
+        <div className="chat-piso" id="chatPiso">
+          {/* v3.82: o "↓ fim" saiu de dentro do texto (cobria a resposta) e agora mora na
+              borda de cima do pé, à direita — cresce para cima, nunca sob a caixa. */}
           {!noFundo && (
             <button
               id="chatIrAoFim"
-              className="btn btn-mini absolute bottom-[116px] left-1/2 z-10 -translate-x-1/2 rounded-full px-3 shadow-md"
+              className="btn btn-mini absolute -top-11 right-3 z-10 rounded-full px-3 shadow-md"
               title="rolar até o fim da conversa"
               onClick={irParaOFim}
             >
@@ -1787,11 +1792,6 @@ export function Chat({
               {novoAbaixo ? " · chegou coisa nova" : ""}
             </button>
           )}
-        </div>
-        {/* v3.16 — pé da conversa: "nova conversa" mudou de lado e desceu para a linha do
-            campo, oposto ao enviar (ação perto do dedo, nada de reset no topo). A dica de
-            teclado saiu da tela — vive no título (hover) do campo. */}
-        <div className="chat-piso" id="chatPiso">
           {/* v3.68 (dono): o aviso agora é honesto. Com a aba VISÍVEL e o stream assistindo
               ao vivo, nada está em segundo plano — o trabalho aparece na tela e o selo não
               mente por cima dela. Ele só aparece quando a janela não está acompanhando o
@@ -1804,7 +1804,7 @@ export function Chat({
           )}
           <div className="chat-piso-linha">
             <div
-              className="chat-composer"
+              className="chat-composer-bloco"
               onClick={(e) => {
                 /* no celular o alvo de toque e a pilula inteira (62px), nao a linha de 34px do campo */
                 if (e.target === e.currentTarget) campoRef.current?.focus();
@@ -1833,160 +1833,168 @@ export function Chat({
                 if (grandes.length) void subirArquivos(grandes);
               }}
             >
-              {arquivos.length > 0 && (
-                <div className="chat-anexos" data-testid="chatArquivos">
-                  {arquivos.map((a) => (
-                    <div className="chat-anexo chat-anexo-arquivo" key={a.id} title={`${a.nome} — ${(a.bytes / 1048576).toFixed(1)} MB`}>
-                      <span className="chat-anexo-nome">{a.nome}</span>
-                      <span className="chat-anexo-tam">{(a.bytes / 1048576).toFixed(1)} MB</span>
-                      <button
-                        className="chat-anexo-x"
-                        title="remover arquivo"
-                        aria-label="remover arquivo"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setArquivos((atual) => atual.filter((x) => x.id !== a.id));
-                        }}
-                      >×</button>
-                    </div>
-                  ))}
+              {(arquivos.length > 0 || Boolean(subindo) || anexos.length > 0) && (
+                <div className="chat-anexos-linha" data-testid="chatAnexosLinha">
+                {arquivos.length > 0 && (
+                  <div className="chat-anexos" data-testid="chatArquivos">
+                    {arquivos.map((a) => (
+                      <div className="chat-anexo chat-anexo-arquivo" key={a.id} title={`${a.nome} — ${(a.bytes / 1048576).toFixed(1)} MB`}>
+                        <span className="chat-anexo-nome">{a.nome}</span>
+                        <span className="chat-anexo-tam">{(a.bytes / 1048576).toFixed(1)} MB</span>
+                        <button
+                          className="chat-anexo-x"
+                          title="remover arquivo"
+                          aria-label="remover arquivo"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setArquivos((atual) => atual.filter((x) => x.id !== a.id));
+                          }}
+                        >×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {subindo && (
+                  <div className="chat-subindo" data-testid="chatSubindo" title={`enviando ${subindo.nome}`}>
+                    <span className="chat-anexo-nome">{subindo.nome}</span>
+                    <span className="chat-anexo-tam">{Math.round(subindo.pct * 100)}%</span>
+                    <div className="chat-subindo-barra"><i style={{ width: `${Math.round(subindo.pct * 100)}%` }} /></div>
+                  </div>
+                )}
+                {anexos.length > 0 && (
+                  <div className="chat-anexos" data-testid="chatAnexos">
+                    {anexos.map((a, i) => (
+                      <div className="chat-anexo" key={i} title={a.nome || "imagem colada"}>
+                        <img src={`data:${a.mime};base64,${a.base64}`} alt={a.nome || "imagem colada"} />
+                        <button
+                          className="chat-anexo-x"
+                          title="remover imagem"
+                          aria-label="remover imagem"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAnexos((atual) => atual.filter((_, k) => k !== i));
+                          }}
+                        >×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 </div>
               )}
-              {subindo && (
-                <div className="chat-subindo" data-testid="chatSubindo" title={`enviando ${subindo.nome}`}>
-                  <span className="chat-anexo-nome">{subindo.nome}</span>
-                  <span className="chat-anexo-tam">{Math.round(subindo.pct * 100)}%</span>
-                  <div className="chat-subindo-barra"><i style={{ width: `${Math.round(subindo.pct * 100)}%` }} /></div>
-                </div>
-              )}
-              {anexos.length > 0 && (
-                <div className="chat-anexos" data-testid="chatAnexos">
-                  {anexos.map((a, i) => (
-                    <div className="chat-anexo" key={i} title={a.nome || "imagem colada"}>
-                      <img src={`data:${a.mime};base64,${a.base64}`} alt={a.nome || "imagem colada"} />
-                      <button
-                        className="chat-anexo-x"
-                        title="remover imagem"
-                        aria-label="remover imagem"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setAnexos((atual) => atual.filter((_, k) => k !== i));
-                        }}
-                      >×</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <textarea
-                id="chatPergunta"
-                ref={campoRef}
-                className="chat-campo"
-                rows={1}
-                placeholder={editando !== null ? "reenviar pergunta editada… (Enter)" : rodando ? "próxima pergunta… (Enter fila)" : "pergunte qualquer coisa…"}
-                title={editando !== null ? "Enter reenvia · Esc cancela a edição" : "Enter envia · Shift+Enter quebra linha"}
-                enterKeyHint="send"
-                value={pergunta}
-              onChange={(e) => {
-                setPergunta(e.target.value);
-                ajustarAltura(e.currentTarget);
-              }}
+              <div className="chat-composer">
+                <textarea
+                  id="chatPergunta"
+                  ref={campoRef}
+                  className="chat-campo"
+                  rows={1}
+                  placeholder={editando !== null ? "reenviar pergunta editada… (Enter)" : rodando ? "próxima pergunta… (Enter fila)" : "pergunte qualquer coisa…"}
+                  title={editando !== null ? "Enter reenvia · Esc cancela a edição" : "Enter envia · Shift+Enter quebra linha"}
+                  enterKeyHint="send"
+                  value={pergunta}
+                onChange={(e) => {
+                  setPergunta(e.target.value);
+                  ajustarAltura(e.currentTarget);
+                }}
 
-              onKeyDown={(e) => {
-                /* v3.18 (T005): Enter QUE ACEITA AUTOCORREÇÃO do teclado não envia — no celular
-                   isso mandava a pergunta pela metade (o evento vem com isComposing, e em teclado
-                   antigo com keyCode 229). Igual ao truque do Hermes/Open WebUI. */
-                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  if (editando !== null) void confirmarEdicao();
-                  else enviar();
-                } else if (e.key === "Escape" && editando !== null) {
-                  cancelarEdicao();
+                onKeyDown={(e) => {
+                  /* v3.18 (T005): Enter QUE ACEITA AUTOCORREÇÃO do teclado não envia — no celular
+                     isso mandava a pergunta pela metade (o evento vem com isComposing, e em teclado
+                     antigo com keyCode 229). Igual ao truque do Hermes/Open WebUI. */
+                  if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    if (editando !== null) void confirmarEdicao();
+                    else enviar();
+                  } else if (e.key === "Escape" && editando !== null) {
+                    cancelarEdicao();
+                  }
+                }}
+              />
+              {/* v3.22 (preview aprovado): "parar" continua existindo — vira o próprio botão de
+                 enviar enquanto a resposta chega (quadrado). v3.62: o botão obedece ao CAMPO —
+                 assim que a pessoa escreve, ele volta a ser o enviar (a fala entra no rastro);
+                 com o campo vazio ele é o parar. Os dois ganchos do E2E seguem vivos. */}
+              <button
+                id={botaoParar ? "chatParar" : "chatEnviar"}
+                className={"chat-enviar" + (botaoParar ? " chat-enviar-parando" : "")}
+                disabled={botaoParar ? snap.parando : !pergunta.trim()}
+                title={
+                  botaoParar
+                    ? snap.parando
+                      ? "parando…"
+                      : "parar esta resposta"
+                    : editando !== null
+                      ? "reenviar editada"
+                      : rodando
+                        ? "mandar agora, no meio da resposta"
+                        : "enviar"
                 }
-              }}
-            />
-            {/* v3.48 (T049) — UM seletor para tudo: png/jpeg/webp até 4 MB vira imagem inline
-                (o modelo enxerga); qualquer outro arquivo, ou imagem maior, sobe por blocos. */}
-            <input
-              ref={arquivoRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                const fs = Array.from(e.target.files ?? []);
-                e.target.value = "";
-                if (!fs.length) return;
-                const ehImagem = (f: File) =>
-                  /^image\/(png|jpeg|webp)$/.test(f.type) && f.size <= 4 * 1024 * 1024;
-                const imagens = fs.filter(ehImagem);
-                const resto = fs.filter((f) => !ehImagem(f));
-                if (imagens.length) void lerImagens(imagens);
-                if (resto.length) void subirArquivos(resto);
-              }}
-            />
-            <button
-              id="chatAnexar"
-              className="chat-acao-icone"
-              title="anexar imagem ou arquivo (ou cole com Ctrl+V, ou arraste)"
-              aria-label="anexar imagem ou arquivo"
-              disabled={Boolean(subindo)}
-              onClick={() => arquivoRef.current?.click()}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-                <path d="M21 12.5l-8.5 8.5a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-3-3l8-8" />
-              </svg>
-            </button>
-            {/* v3.18 (T022): ditado por voz do próprio navegador */}
-            <button
-              id="chatMic"
-              className={"chat-acao-icone" + (ditando ? " chat-mic-vivo" : "")}
-              title={ditando ? "parar de ditar" : "ditar a pergunta (voz)"}
-              aria-label="ditar"
-              onClick={alternarDitado}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-                <rect x="9" y="3" width="6" height="11" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-              </svg>
-            </button>
-            {editando !== null && (
-              <button className="btn btn-mini" title="cancelar a edição (Esc)" onClick={cancelarEdicao}>
-                ✕<span className="chat-editar-rotulo"> editar</span>
+                aria-label={botaoParar ? "parar a resposta" : "enviar"}
+                onClick={botaoParar ? pararResposta : editando !== null ? confirmarEdicao : enviar}
+              >
+                {botaoParar ? (
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 19V5" />
+                    <path d="M5 12l7-7 7 7" />
+                  </svg>
+                )}
               </button>
-            )}
-            {/* v3.22 (preview aprovado): "parar" continua existindo — vira o próprio botão de
-               enviar enquanto a resposta chega (quadrado). v3.62: o botão obedece ao CAMPO —
-               assim que a pessoa escreve, ele volta a ser o enviar (a fala entra no rastro);
-               com o campo vazio ele é o parar. Os dois ganchos do E2E seguem vivos. */}
-            <button
-              id={botaoParar ? "chatParar" : "chatEnviar"}
-              className={"chat-enviar" + (botaoParar ? " chat-enviar-parando" : "")}
-              disabled={botaoParar ? snap.parando : !pergunta.trim()}
-              title={
-                botaoParar
-                  ? snap.parando
-                    ? "parando…"
-                    : "parar esta resposta"
-                  : editando !== null
-                    ? "reenviar editada"
-                    : rodando
-                      ? "mandar agora, no meio da resposta"
-                      : "enviar"
-              }
-              aria-label={botaoParar ? "parar a resposta" : "enviar"}
-              onClick={botaoParar ? pararResposta : editando !== null ? confirmarEdicao : enviar}
-            >
-              {botaoParar ? (
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                  <rect x="6" y="6" width="12" height="12" rx="2" />
+              </div>
+              <div className="chat-apoio">
+              {/* v3.48 (T049) — UM seletor para tudo: png/jpeg/webp até 4 MB vira imagem inline
+                  (o modelo enxerga); qualquer outro arquivo, ou imagem maior, sobe por blocos. */}
+              <input
+                ref={arquivoRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  const fs = Array.from(e.target.files ?? []);
+                  e.target.value = "";
+                  if (!fs.length) return;
+                  const ehImagem = (f: File) =>
+                    /^image\/(png|jpeg|webp)$/.test(f.type) && f.size <= 4 * 1024 * 1024;
+                  const imagens = fs.filter(ehImagem);
+                  const resto = fs.filter((f) => !ehImagem(f));
+                  if (imagens.length) void lerImagens(imagens);
+                  if (resto.length) void subirArquivos(resto);
+                }}
+              />
+              <button
+                id="chatAnexar"
+                className="chat-acao-icone"
+                title="anexar imagem ou arquivo (ou cole com Ctrl+V, ou arraste)"
+                aria-label="anexar imagem ou arquivo"
+                disabled={Boolean(subindo)}
+                onClick={() => arquivoRef.current?.click()}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                  <path d="M21 12.5l-8.5 8.5a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-3-3l8-8" />
                 </svg>
-              ) : (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M12 19V5" />
-                  <path d="M5 12l7-7 7 7" />
+              </button>
+              {/* v3.18 (T022): ditado por voz do próprio navegador */}
+              <button
+                id="chatMic"
+                className={"chat-acao-icone" + (ditando ? " chat-mic-vivo" : "")}
+                title={ditando ? "parar de ditar" : "ditar a pergunta (voz)"}
+                aria-label="ditar"
+                onClick={alternarDitado}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
                 </svg>
+              </button>
+              {editando !== null && (
+                <button className="btn btn-mini" title="cancelar a edição (Esc)" onClick={cancelarEdicao}>
+                  ✕<span className="chat-editar-rotulo"> editar</span>
+                </button>
               )}
-            </button>
+              </div>
             </div>
           </div>
           {/* v3.73 (T054): medidor de contexto DO ÚLTIMO ENVIO, colado abaixo do campo — o dono

@@ -923,6 +923,8 @@
   }
   /* o pé sobe com o teclado (T008) — transição para não saltar */
   .chat-piso {
+    /* v3.82: âncora do "↓ fim" */
+    position: relative;
     transition: transform 0.15s ease-out;
   }
 
@@ -1062,10 +1064,17 @@
       @apply h-[44px] px-3 text-[14px];
     }
   }
-  .chat-composer {
-    @apply mx-auto flex items-end gap-2 rounded-[14px] border border-borda
-      bg-[#111721] py-1.5 pl-3.5 pr-1.5;
+  /* v3.82 (dono, 27/11): o compositor virou uma COLUNA — anexos numa linha própria acima,
+     a caixa só com o texto e o ENVIAR dentro, e clipe/mic numa linha de apoio embaixo.
+     Antes o anexo entrava na mesma linha do texto: em 390 px a caixa ficava com 130 px e
+     o texto quebrava a cada duas palavras. */
+  .chat-composer-bloco {
+    @apply mx-auto flex w-full min-w-0 flex-col gap-1.5;
     max-width: 780px;
+  }
+  .chat-composer {
+    @apply flex items-end gap-2 rounded-[14px] border border-borda
+      bg-[#111721] py-1.5 pl-3.5 pr-1.5;
     min-height: 50px;
   }
   .chat-composer:focus-within {
@@ -1108,10 +1117,12 @@
     @apply mx-auto flex items-center gap-2;
     max-width: 780px;
   }
-  .chat-piso-linha .chat-composer {
-    @apply mx-0 flex-1;
-    max-width: none;
-    min-width: 0;
+  .chat-anexos-linha {
+    @apply flex flex-wrap items-center gap-1.5 px-1;
+  }
+  /* linha de apoio: clipe, microfone e o cancelar edição ficam FORA da caixa de texto */
+  .chat-apoio {
+    @apply flex items-center gap-1 px-1;
   }
   .chat-segundo-plano {
     @apply mx-auto mb-1.5 max-w-[780px] pl-1 text-[11.5px] text-txt3;
@@ -1206,11 +1217,15 @@
     @apply mt-1 whitespace-normal leading-[1.5] text-txt3;
   }
   .chat-acoes {
-    @apply mt-1 flex items-center gap-1;
+    /* v3.82: quebra ENTRE os itens (antes o "53 tok/s" partia no meio em tela estreita) */
+    @apply mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5;
+  }
+  .chat-acoes .chat-hora {
+    white-space: nowrap;
   }
   /* v3.41 — imagem colada no campo (Ctrl+V): miniatura acima do texto, com o × para tirar */
   .chat-anexos {
-    @apply flex flex-wrap items-center gap-1.5 px-2 pt-1.5;
+    @apply flex flex-wrap items-center gap-1.5;
   }
   .chat-anexo {
     @apply relative h-12 w-12 overflow-hidden rounded-lg border border-borda;
@@ -1403,15 +1418,26 @@
     min-height: 44px;
   }
   .chat-enviar {
-    /* dedo: 40px (não 44) porque a caixa encolheu para 48 e 44 voltaria a comer a
-       altura toda; o alvo de toque continua acima de 40 e o campo inteiro é clicável */
-    width: 40px;
-    height: 40px;
+    /* v3.82: 44px de dedo. A desculpa dos 40 px (caixa de 48) morreu com o campo novo:
+       o enviar é o ÚNICO botão dentro da caixa, que agora tem 50 de altura */
+    width: 44px;
+    height: 44px;
     border-radius: 10px;
   }
   .chat-acao-icone {
     width: 44px;
     height: 44px;
+  }
+  /* v3.82: alvos de dedo da gaveta (✕ e nova conversa mediam 34 e 40 px) */
+  .conv-fechar {
+    width: 44px;
+    height: 44px;
+  }
+  .conv-nova {
+    min-height: 44px;
+  }
+  .conv-menu-app {
+    min-height: 44px;
   }
   /* no celular o rótulo sai, o ícone fica — a linha do topo é só pílula + nova conversa */
   .chat-acao-rotulo {
@@ -1610,6 +1636,16 @@
   }
   .conv-rodape {
     @apply border-t border-borda px-3 py-2 text-[10.5px] text-txt3;
+  }
+  /* v3.82: o ☰ do topo abre a gaveta; o menu do app vem daqui (nome próprio — conv-menu
+     já era o dropdown ⋯ dos itens) */
+  .conv-rodape {
+    @apply flex items-center gap-2;
+  }
+  .conv-menu-app {
+    @apply ml-auto flex items-center gap-1 rounded-lg border border-borda bg-sup2 px-2 py-1
+      text-[11.5px] text-txt2 hover:border-bordaforte hover:bg-sup3 hover:text-txt;
+    min-height: 32px;
   }
   /* a marca de compactação — tracejada, clicável */
   .marca-compactacao {

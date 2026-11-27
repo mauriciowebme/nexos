@@ -421,6 +421,11 @@ export default function App() {
               }}
               onNova={novaConversa}
               onFechar={() => setListaAberta(false)}
+              /* v3.82: o menu do app passa a morar DENTRO da gaveta (um ☰ só no topo) */
+              onAbrirMenu={() => {
+                setListaAberta(false);
+                setMenuAberto(true);
+              }}
             />
           </div>
         </div>
@@ -526,7 +531,6 @@ export default function App() {
               provider={provider}
               onProviderConfirmado={() => setProvider((p) => (p ? { ...p, configurado: true } : p))}
               onIrConfig={() => navegar("config")}
-              onAbrirMenu={() => setMenuAberto(true)}
               onAbrirConversas={() => setListaAberta(true)}
               conversaId={conversaSel}
               onTurnoFim={turnoGravado}
