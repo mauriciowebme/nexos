@@ -4705,6 +4705,7 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
       "const modelo=String(j.model||'');const m=j.messages||[];",
       "const diz=(t)=>res.end(JSON.stringify({choices:[{message:{role:'assistant',content:t}}]}));",
       "if(modelo==='vazio')return diz('');",
+      "if(modelo==='vazio1'){globalThis.__vazio1=(globalThis.__vazio1||0)+1;if(globalThis.__vazio1===1)return diz('');return diz('SEGUNDA VEZ DEU TEXTO');}",
       "if(modelo==='anexa'){",
       "if(!m.some(x=>x.role==='tool')){const args=JSON.stringify({codigo:\"import nexos\\nopen('e2e-v366.txt','w').write('conteudo-e2e-366')\\nprint(nexos.anexar('e2e-v366.txt'))\"});",
       "return res.end(JSON.stringify({choices:[{message:{role:'assistant',content:'GERANDO',tool_calls:[{id:'a1',type:'function',function:{name:'rodar_python',arguments:args}}]}}]}));}",
@@ -4736,9 +4737,30 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.check("v3.67 provedor do teste salvo", r.status === 200, r.texto.slice(0, 120));
     r = await call("POST", "/chat", { key: OPKEY, corpo: { pergunta: "oi", memoria: "teste-v366", provedor: undefined } });
     f.check(
-      "v3.67 resposta vazia vira aviso na tela (não bolha em branco)",
-      r.status === 200 && /não devolveu resposta/.test(String(r.json?.resposta ?? "")) && /vazia/.test(String(r.json?.aviso ?? "")),
+      "v3.67/v3.82 resposta vazia vira UM aviso na tela (não bolha em branco)",
+      r.status === 200 && /não devolveu resposta/.test(String(r.json?.resposta ?? "")) && r.json?.aviso == null,
       `${r.status} ${String(r.json?.resposta ?? "").slice(0, 90)} | aviso=${r.json?.aviso}`,
+    );
+    f.check(
+      "v3.82 turno sem resposta não mostra conta de tokens",
+      r.json?.custo == null,
+      JSON.stringify(r.json?.custo ?? null).slice(0, 120),
+    );
+
+    /* v3.82 (T066): resposta vazia é intermitência do provedor — o servidor repete UMA vez
+       sozinho e a pessoa recebe o texto, sem tocar em "tentar de novo". */
+    r = await provedor("vazio1");
+    r = await call("POST", "/chat", { key: OPKEY, corpo: { pergunta: "oi de novo", memoria: "teste-v366" } });
+    f.check(
+      "v3.82 resposta vazia é repetida sozinha uma vez e o texto chega",
+      r.status === 200 && String(r.json?.resposta ?? "").includes("SEGUNDA VEZ DEU TEXTO") && r.json?.aviso == null,
+      `${r.status} ${String(r.json?.resposta ?? "").slice(0, 90)} | aviso=${r.json?.aviso}`,
+    );
+    const rastroVazio = String((r.json?.rastro ?? []).map((x: any) => `${x.tipo}:${String(x.texto ?? "").slice(0, 60)}`).join(" | "));
+    f.check(
+      "v3.82 a trilha diz que repetiu o pedido (sem esconder o que houve)",
+      /aviso:.*repeti o pedido uma vez/.test(rastroVazio),
+      rastroVazio.slice(0, 220),
     );
 
     r = await provedor("anexa");

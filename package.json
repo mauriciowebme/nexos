@@ -1,6 +1,6 @@
 {
   "name": "nexos",
-  "version": "3.81.0",
+  "version": "3.82.0",
   "description": "Serviço RAG multi-tenant: Node/TypeScript + Postgres(pgvector) + embedder Python (nomic-embed-text-v1.5)",
   "private": true,
   "type": "commonjs",
