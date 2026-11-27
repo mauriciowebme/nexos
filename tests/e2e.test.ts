@@ -379,7 +379,7 @@ test("nexos v2 — suíte completa", async (t) => {
     f.fechar("v1.8");
   });
 
-  await bloco(t, "MCP: JSON-RPC stateless com as 51 tools", async () => {
+  await bloco(t, "MCP: JSON-RPC stateless com as 53 tools", async () => {
     const f = fiscal();
     const H = { key: TESTKEY };
     const rpc = (id: unknown, method: string, params?: unknown, key: string | null = TESTKEY) =>
@@ -447,11 +447,13 @@ test("nexos v2 — suíte completa", async (t) => {
       "capturar_tela", "baixar_arquivo", "copiar_arquivo",
       /* v3.46: arquivo do servidor (navegador) -> máquina */
       "enviar_para_maquina",
+      /* v3.81: o modelo acha e lê conversa antiga do chat */
+      "buscar_conversas", "ler_conversa",
     ].sort();
     /* v3.36 — a lista passou a dizer a verdade da CONTA: as 5 de operador saem para o comum */
     const SO_OPERADOR_336 = ["listar_usuarios", "criar_usuario", "apagar_usuario", "esquecimento", "gerir_mcp"];
     const ESPERADAS_COMUM = ESPERADAS.filter((n) => !SO_OPERADOR_336.includes(n)).sort();
-    f.check("tools/list da conta comum traz as 51 (as 5 de operador ficam fora)", JSON.stringify(nomes) === JSON.stringify(ESPERADAS_COMUM), `${nomes.length}: ${nomes.filter((n: string) => !ESPERADAS_COMUM.includes(n)).join(", ")}`);
+    f.check("tools/list da conta comum traz as 53 (as 5 de operador ficam fora)", JSON.stringify(nomes) === JSON.stringify(ESPERADAS_COMUM), `${nomes.length}: ${nomes.filter((n: string) => !ESPERADAS_COMUM.includes(n)).join(", ")}`);
 
     r = await rpc(5, "tools/call", { name: "health" }, null);
     f.check("tools/call sem Bearer -> 401", r.status === 401 && "error" in (r.json ?? {}), r.texto.slice(0, 150));
@@ -647,12 +649,12 @@ test("nexos v2 — suíte completa", async (t) => {
     r = await call("PATCH", "/config/mcp/usuarios", { key: OPKEY, corpo: { ativo: false } });
     f.check("operador desliga o MCP das contas", r.status === 200 && r.json?.usuarios_habilitado === false, r.texto.slice(0, 160));
     f.check("com o MCP desligado a conta comum não vê ferramenta nenhuma", (await lista(TESTKEY)).length === 0, (await lista(TESTKEY)).length);
-    f.check("o operador continua entrando (para poder reverter)", (await lista(OPKEY)).length === 57, (await lista(OPKEY)).length);
+    f.check("o operador continua entrando (para poder reverter)", (await lista(OPKEY)).length === 59, (await lista(OPKEY)).length);
     r = await call("POST", "/mcp", { key: TESTKEY, corpo: { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "health", arguments: {} } } });
     f.check("chamada da conta comum com MCP desligado: 403 com o motivo", r.status === 403 && /desligado/.test(r.texto), r.texto.slice(0, 160));
 
     r = await call("PATCH", "/config/mcp/usuarios", { key: OPKEY, corpo: { ativo: true } });
-    f.check("religado, a conta comum volta a ver as 51", r.status === 200 && (await lista(TESTKEY)).length === 51, (await lista(TESTKEY)).length);
+    f.check("religado, a conta comum volta a ver as 53", r.status === 200 && (await lista(TESTKEY)).length === 53, (await lista(TESTKEY)).length);
     r = await call("GET", "/config/mcp", { key: OPKEY });
     f.check("a config do admin mostra o interruptor", r.json?.usuarios_habilitado === true, JSON.stringify(r.json).slice(0, 120));
 
@@ -5234,6 +5236,75 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     }
     noContainer("rm -rf /app/dados/usuarios/op/scripts/saida/despejos");
     f.fechar("v3.74 guarda do laço");
+  });
+
+  /* ------------------------------------------------ v3.81 — CONVERSAS (a lista lateral) */
+  await bloco(t, "v3.81 — conversas: cria, lista, abre, renomeia e arquiva (nada é apagado)", async () => {
+    const f = fiscal();
+    let r = await call("POST", "/conversas", { key: TESTKEY, corpo: { memoria: "", titulo: "suite conversas" } });
+    f.check("POST /conversas -> 201 {id}", r.status === 201 && Number(r.json?.id) > 0, r.texto.slice(0, 160));
+    const id = Number(r.json?.id);
+
+    r = await call("GET", "/conversas/999999", { key: TESTKEY });
+    f.check("conversa inexistente -> 404", r.status === 404, r.status);
+
+    r = await call("GET", "/conversas", { key: TESTKEY });
+    f.check(
+      "GET /conversas lista a conversa recém-criada",
+      (r.json?.conversas ?? []).some((c: any) => Number(c.id) === id),
+      r.texto.slice(0, 160),
+    );
+
+    r = await call("GET", `/conversas/${id}`, { key: TESTKEY });
+    f.check(
+      "GET /conversas/:id devolve metadados + mensagens",
+      r.status === 200 && Array.isArray(r.json?.mensagens) && Number(r.json?.conversa?.id) === id,
+      r.texto.slice(0, 160),
+    );
+
+    r = await call("PATCH", `/conversas/${id}`, { key: TESTKEY, corpo: { titulo: "renomeada pela suíte" } });
+    f.check("PATCH titulo renomeia", r.status === 200 && r.json?.titulo === "renomeada pela suíte", r.texto.slice(0, 160));
+
+    r = await call("GET", `/conversas/${id}`, { key: OPKEY });
+    f.check("outra conta não abre a conversa (404 — isolamento)", r.status === 404, r.status);
+
+    r = await call("GET", "/conversas/buscar?termo=a", { key: TESTKEY });
+    f.check("busca com termo curto -> 422", r.status === 422, r.status);
+
+    r = await call("DELETE", `/conversas/${id}`, { key: TESTKEY });
+    f.check("DELETE arquiva (arquivada:true)", r.status === 200 && r.json?.arquivada === true, r.texto.slice(0, 160));
+
+    r = await call("GET", "/conversas", { key: TESTKEY });
+    f.check(
+      "arquivada sai da lista padrão",
+      !(r.json?.conversas ?? []).some((c: any) => Number(c.id) === id),
+      r.texto.slice(0, 120),
+    );
+
+    r = await call("GET", `/conversas/${id}`, { key: TESTKEY });
+    f.check("histórico da arquivada continua acessível", r.status === 200, r.status);
+
+    r = await call("POST", "/mcp", {
+      key: TESTKEY,
+      corpo: { jsonrpc: "2.0", id: 91, method: "tools/call", params: { name: "buscar_conversas", arguments: { termo: "conversas" } } },
+    });
+    f.check(
+      "tool buscar_conversas responde pela porta MCP",
+      r.status === 200 && r.json?.result?.isError !== true && String(r.json?.result?.content?.[0]?.text ?? "").includes("achados"),
+      JSON.stringify(r.json).slice(0, 200),
+    );
+
+    r = await call("POST", "/mcp", {
+      key: TESTKEY,
+      corpo: { jsonrpc: "2.0", id: 92, method: "tools/call", params: { name: "ler_conversa", arguments: { conversa_id: id } } },
+    });
+    f.check(
+      "tool ler_conversa abre a conversa pelo id",
+      r.status === 200 && r.json?.result?.isError !== true && String(r.json?.result?.content?.[0]?.text ?? "").includes("mensagens"),
+      JSON.stringify(r.json).slice(0, 200),
+    );
+
+    f.fechar("conversas-3.81");
   });
 
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {
