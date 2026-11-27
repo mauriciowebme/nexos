@@ -126,6 +126,25 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: "buscar_conversas",
+    description:
+      "Busca por TEXTO em todas as conversas do chat desta conta (as suas e as da conta em foco). Devolve a conversa, o trecho que casou e o id da mensagem. Use quando a pessoa citar algo dito antes ('aquilo que a gente falou sobre X') e você precisar achar em qual conversa foi.",
+    inputSchema: { type: "object", properties: {
+      termo: { type: "string", description: "texto procurado (minimo 2 caracteres)" },
+      limite: { type: "integer", description: "quantos trechos devolver (padrao 20, max 100)" },
+      desde: { type: "string", description: "opcional: data ISO minima (ex.: 2026-11-01)" },
+      }, required: ["termo"] },
+  },
+  {
+    name: "ler_conversa",
+    description:
+      "Abre uma conversa pelo id: titulo, datas, se foi compactada e as ultimas mensagens na ordem. Use depois de buscar_conversas quando precisar do contexto inteiro, nao so do trecho.",
+    inputSchema: { type: "object", properties: {
+      conversa_id: { type: "integer", description: "id devolvido por buscar_conversas" },
+      limite: { type: "integer", description: "quantas mensagens (padrao 100, max 500)" },
+      }, required: ["conversa_id"] },
+  },
+  {
     name: "ingest",
     description:
       "Enfileira um documento para ingestao (nao trava: responde job_id na hora). Acompanhe com ingest_status.",
@@ -848,6 +867,20 @@ async function executarTool(
       return rodarPython(codigo, user, {
         segundos: args.segundos === undefined ? undefined : Number(args.segundos),
         dependencias: args.dependencias,
+      });
+    }
+    case "buscar_conversas": {
+      const { buscarConversas } = await import("./conversas");
+      return buscarConversas(user, {
+        termo: String(args.termo ?? ""),
+        limite: args.limite === undefined ? undefined : Number(args.limite),
+        desde: args.desde ? String(args.desde) : null,
+      });
+    }
+    case "ler_conversa": {
+      const { verConversa } = await import("./conversas");
+      return verConversa(user, Number(args.conversa_id ?? 0), {
+        limite: args.limite === undefined ? undefined : Number(args.limite),
       });
     }
     case "health":

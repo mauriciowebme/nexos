@@ -17,6 +17,7 @@ import { erro409, erro422 } from "./errors";
 import { q } from "./db";
 import { apertarRodada, CHARS_POR_TOKEN, custoDoPayload, type MsgChat, montarPayload, OPCOES_PADRAO, type Opcoes } from "./compactar";
 import { abrirAnexo, type AnexoMeta } from "./anexos";
+import { conversaDoTurno, marcarCompactacao, tocarConversa } from "./conversas";
 import { podeVerProvedor } from "./provedores";
 import { MAX_TELAS_TURNO, htmlParcial, type Tela } from "./telas";
 import {
@@ -209,6 +210,45 @@ export async function initProvider(): Promise<void> {
   /* v3.44: print/arquivo vindo da máquina, reaberto junto com a conversa */
   await q(`ALTER TABLE chat_mensagens ADD COLUMN IF NOT EXISTS anexos JSONB`);
   await q(`CREATE INDEX IF NOT EXISTS chat_tenant_idx ON chat_mensagens (tenant, memoria, id)`);
+  /* v3.81: a CONVERSA virou objeto próprio — a gaveta é pasta de documentos, não a chave
+     do chat. `conversa_id` liga a mensagem à conversa; o backfill abaixo transforma o que
+     já existe em uma conversa por (conta, gaveta), sem perder uma linha. */
+  await q(
+    `CREATE TABLE IF NOT EXISTS conversas (
+       id BIGSERIAL PRIMARY KEY,
+       tenant TEXT NOT NULL,
+       memoria TEXT NOT NULL DEFAULT '',
+       titulo TEXT NOT NULL DEFAULT '',
+       resumo TEXT,
+       compactado_ate BIGINT,
+       arquivada BOOLEAN NOT NULL DEFAULT false,
+       criado_em TIMESTAMPTZ NOT NULL DEFAULT now(),
+       atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now())`,
+  );
+  await q(`ALTER TABLE chat_mensagens ADD COLUMN IF NOT EXISTS conversa_id BIGINT`);
+  await q(`ALTER TABLE chat_tarefas ADD COLUMN IF NOT EXISTS conversa_id BIGINT`);
+  await q(`CREATE INDEX IF NOT EXISTS chat_conversa_idx ON chat_mensagens (conversa_id, id)`);
+  await q(`CREATE INDEX IF NOT EXISTS conversas_tenant_idx ON conversas (tenant, atualizado_em DESC)`);
+  /* backfill idempotente: uma conversa por (conta, gaveta) que tenha mensagem órfã */
+  await q(
+    `INSERT INTO conversas (tenant, memoria, titulo, criado_em, atualizado_em)
+     SELECT m.tenant, m.memoria,
+            /* título = começo da PRIMEIRA pergunta daquela gaveta (senão a lista nasce
+               cheia de "conversa sem título" no primeiro boot depois da migração) */
+            COALESCE((SELECT left(btrim(regexp_replace(x.texto, '[[:space:]]+', ' ', 'g')), 80)
+                        FROM chat_mensagens x
+                       WHERE x.tenant = m.tenant AND x.memoria = m.memoria AND x.papel = 'user'
+                       ORDER BY x.id LIMIT 1), ''),
+            min(m.criado_em), max(m.criado_em)
+       FROM chat_mensagens m
+      WHERE m.conversa_id IS NULL
+      GROUP BY m.tenant, m.memoria`,
+  );
+  await q(
+    `UPDATE chat_mensagens m SET conversa_id = c.id
+       FROM conversas c
+      WHERE m.conversa_id IS NULL AND c.tenant = m.tenant AND c.memoria = m.memoria`,
+  );
   /* v3.35.1: o texto das regras da casa NÃO é mais injetado no boot. Antes, cada subida regravava
      as regras em todo campo vazio — quem apagasse as instruções ("conversa pura") as via voltar
      no próximo restart, sem ter salvo nada. `REGRAS_CASA` agora só serve de semente para o botão
@@ -1268,18 +1308,29 @@ function ultimoResultadoTool(mensagens: Mensagem[]): string {
   return "";
 }
 
-/** as últimas mensagens gravadas desta gaveta, no formato que o modelo lê (v3.0) */
-async function mensagensDoHistorico(tenant: string, memoria: string, turnos: number): Promise<MsgChat[]> {
+/** as últimas mensagens gravadas desta CONVERSA, no formato que o modelo lê (v3.0).
+ *  v3.81: o recorte é a conversa, não a gaveta — e vem junto o id de cada linha, que é o que
+ *  permite gravar `compactado_ate` (a marca que a tela desenha). */
+async function mensagensDoHistorico(
+  tenant: string,
+  conversaId: number,
+  turnos: number,
+): Promise<{ msgs: MsgChat[]; ids: number[] }> {
   /* a gaveta PADRAO e string vazia: comprimir `!memoria` desligava a conversa justamente nela */
-  if (turnos <= 0) return [];
-  const r = await q<{ papel: string; texto: string }>(
-    `SELECT papel, texto FROM chat_mensagens
-     WHERE tenant = $1 AND memoria = $2 ORDER BY id DESC LIMIT $3`,
-    [tenant, memoria, Math.min(turnos, 100)],
+  if (turnos <= 0) return { msgs: [], ids: [] };
+  const r = await q<{ id: string; papel: string; texto: string }>(
+    `SELECT id, papel, texto FROM chat_mensagens
+     WHERE tenant = $1 AND conversa_id = $2 ORDER BY id DESC LIMIT $3`,
+    [tenant, conversaId, Math.min(turnos, 100)],
   );
-  return r.rows
-    .reverse()
-    .map((m: any) => ({ role: m.papel === "user" ? "user" : "assistant", content: String(m.texto ?? "") })) as MsgChat[];
+  const linhas = r.rows.reverse();
+  return {
+    msgs: linhas.map((m: any) => ({
+      role: m.papel === "user" ? "user" : "assistant",
+      content: String(m.texto ?? ""),
+    })) as MsgChat[],
+    ids: linhas.map((m: any) => Number(m.id)),
+  };
 }
 
 const MIMES_VISAO = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -1311,6 +1362,8 @@ export async function responderChat(
   user: Usuario,
   body: {
     pergunta: string; memoria?: string; tenant?: string | null; provedor?: string; modelo?: string;
+    /** v3.81: a conversa que recebe o turno (sem id, nasce uma nova) */
+    conversa_id?: number | string | null;
     /** v3.41: imagens coladas/coladas no chat (base64 puro, sem o prefixo data:) */
     imagens?: { mime: string; base64: string }[];
     /** v3.46: arquivos JÁ no servidor (upado pelo navegador em blocos) — só id/nome */
@@ -1339,6 +1392,9 @@ export async function responderChat(
   }
   const tenant = tenantFor(user, body.tenant ?? null);
   const memoria = (body.memoria ?? "").trim();
+  /* v3.81: a mensagem pertence a uma CONVERSA — a informada (validando dono) ou uma nova,
+     que já nasce com o título da pergunta. A gaveta continua sendo o escopo dos documentos. */
+  const conversaId = await conversaDoTurno(tenant, memoria, body.conversa_id, pergunta);
   /* v3.19: o usuário pode escolher o provedor (e o modelo) na hora da conversa */
   const cfg = await resolverProvider(tenant, { provedor: body.provedor, modelo: body.modelo, operador: user.operador });
   if (!cfg) {
@@ -1359,7 +1415,7 @@ export async function responderChat(
      é aparado antes de qualquer descarte, e o que ainda não couber cai do mais antigo — avisando
      quantas foram, porque "sumiu sem dizer" é pior que sumir.
      Regra v2.8 mantida: nenhuma instrução embutida — system prompt vazio = modelo conversa puro. */
-  const historico = await mensagensDoHistorico(tenant, memoria, cfg.memoria_turnos);
+  const { msgs: historico, ids: idsHistorico } = await mensagensDoHistorico(tenant, conversaId, cfg.memoria_turnos);
   const plano = montarPayload({
     system: cfg.system_prompt,
     historico,
@@ -1369,6 +1425,9 @@ export async function responderChat(
     reserva: cfg.reserva_tokens,
     opcoes: cfg.comp,
   });
+  /* v3.81: até onde o resumo cobriu, em id de mensagem (a marca da tela e do banco). */
+  const compactadoAte =
+    plano.compactou && plano.resumidas > 0 ? (idsHistorico[plano.resumidas - 1] ?? null) : null;
   const mensagens: Mensagem[] = plano.mensagens as Mensagem[];
   /* v3.46: a nota vai só para o que o MODELO lê; `pergunta` continua limpa para a
      busca e para o histórico (prefixo em pergunta envenenaria o embedding) */
@@ -1948,10 +2007,10 @@ export async function responderChat(
     const parcial = (emitido + narraViva).trim();
     const embrulho = empacotar(parcial, "parada pelo usuário — o que chegou ficou gravado", true);
     await gravarMensagens(
-      tenant, memoria, pergunta, parcial, chamadas, falas, pensamento.trim(), rastro, [...fontes],
+      tenant, conversaId, memoria, pergunta, parcial, chamadas, falas, pensamento.trim(), rastro, [...fontes],
       cfg.provedor, cfg.modelo, telas, anexos, Date.now() - inicio, anexosDoUsuario, embrulho.custo,
     );
-    return embrulho;
+    return { ...embrulho, conversa_id: conversaId };
   }
 
   /* v3.67: resposta VAZIA (ou só espaço/quebra de linha) não pode virar bolha em branco.
@@ -1978,12 +2037,17 @@ export async function responderChat(
   }
 
   const embrulho = empacotar(texto, aviso, false);
-  await gravarMensagens(tenant, memoria, pergunta, texto, chamadas, falas, pensamento.trim(), rastro, [...fontes], cfg.provedor, cfg.modelo, telas, anexos, Date.now() - inicio, anexosDoUsuario, embrulho.custo);
-  return embrulho;
+  await gravarMensagens(tenant, conversaId, memoria, pergunta, texto, chamadas, falas, pensamento.trim(), rastro, [...fontes], cfg.provedor, cfg.modelo, telas, anexos, Date.now() - inicio, anexosDoUsuario, embrulho.custo);
+  /* v3.81: o turno fecha a conversa (data sobe) e, se a compactação agiu, a marca é gravada
+     com o id da última mensagem que o resumo cobriu — é ela que a tela desenha. */
+  await tocarConversa(tenant, conversaId, pergunta);
+  await marcarCompactacao(tenant, conversaId, compactadoAte);
+  return { ...embrulho, conversa_id: conversaId };
 }
 
 async function gravarMensagens(
   tenant: string,
+  conversaId: number,
   memoria: string,
   pergunta: string,
   resposta: string,
@@ -2005,16 +2069,16 @@ async function gravarMensagens(
   custoExtra: Record<string, unknown> = {},
 ): Promise<void> {
   await q(
-    `INSERT INTO chat_mensagens (tenant, memoria, papel, texto, ferramentas, anexos) VALUES ($1, $2, 'user', $3, NULL, $4::jsonb)`,
-    [tenant, memoria, pergunta, JSON.stringify(anexosDoUsuario)],
+    `INSERT INTO chat_mensagens (tenant, conversa_id, memoria, papel, texto, ferramentas, anexos) VALUES ($1, $2, $3, 'user', $4, NULL, $5::jsonb)`,
+    [tenant, conversaId, memoria, pergunta, JSON.stringify(anexosDoUsuario)],
   );
   /* v3.79 (dono, 26/11): a chave de um usuário novo aparece UMA vez na tela e NÃO fica
      gravada no histórico — o que vai para o banco é a versão mascarada (`••••XJJq`). */
   const respostaGravada = mascararTexto(resposta);
   await q(
-    `INSERT INTO chat_mensagens (tenant, memoria, papel, texto, ferramentas, falas, raciocinio, rastro, fontes, custo, provedor, modelo, telas, anexos) VALUES ($1, $2, 'assistant', $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12::jsonb, $13::jsonb)`,
+    `INSERT INTO chat_mensagens (tenant, conversa_id, memoria, papel, texto, ferramentas, falas, raciocinio, rastro, fontes, custo, provedor, modelo, telas, anexos) VALUES ($1, $2, $3, 'assistant', $4, $5::jsonb, $6::jsonb, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11, $12, $13::jsonb, $14::jsonb)`,
     [
-      tenant, memoria, respostaGravada, JSON.stringify(chamadas), JSON.stringify(falas), raciocinio || null,
+      tenant, conversaId, memoria, respostaGravada, JSON.stringify(chamadas), JSON.stringify(falas), raciocinio || null,
       JSON.stringify(rastro), JSON.stringify(fontes),
       /* v3.18 (T018): tok_out medido pela mesma régua do orçamento; tok_in fica por conta de quem
          chamou (a resposta pode ser parcial) — gravamos só o que temos aqui. */

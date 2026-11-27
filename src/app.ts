@@ -19,7 +19,7 @@ import {
 } from "./maquinas";
 import { consumirUpload, consumirUploadDeArquivo } from "./maquinas_tools";
 import { abrirAnexo, abrirEnvio, apagarAnexoDe, conferirChave, estadoDoEnvio, gravarBloco, listarAnexos } from "./anexos";
-import { HttpError, iso } from "./errors";
+import { HttpError, iso , erro422 } from "./errors";
 import { authenticate, ipCliente } from "./auth";
 import { embedderDim, embedderDisponivel } from "./embed";
 import { detectarOcr, ocrDisponivel } from "./ocr";
@@ -67,6 +67,15 @@ import {
   testarProvider,
   verProvider,
 } from "./provider";
+import {
+  arquivarConversa,
+  buscarConversas,
+  contarConversas,
+  criarConversa,
+  listarConversas,
+  renomearConversa,
+  verConversa,
+} from "./conversas";
 import {
   listarProvedores,
   salvarProvedor,
@@ -1097,6 +1106,8 @@ export function criarApp(): FastifyInstance {
       imagens: (b.imagens as { mime: string; base64: string }[] | undefined) ?? [],
       /* v3.46: arquivos grandes que o navegador subiu em blocos (só o id viaja) */
       anexos: (b.anexos as { id: string; nome?: string; bytes?: number }[] | undefined) ?? [],
+      /* v3.81: em qual conversa o turno entra (sem id, nasce uma nova) */
+      conversa_id: b.conversa_id ?? null,
     });
     void contarUso("chats");
     return r;
@@ -1121,6 +1132,7 @@ export function criarApp(): FastifyInstance {
         modelo: vString(b.modelo, "modelo", { max: 100, def: "" }),
         /* v3.46: arquivos grandes do navegador — só o id viaja; o conteúdo fica no disco */
         anexos: (b.anexos as { id: string; nome?: string; bytes?: number }[] | undefined) ?? [],
+        conversa_id: b.conversa_id ?? null,
       },
       rodarTarefa,
     );
@@ -1317,6 +1329,68 @@ export function criarApp(): FastifyInstance {
     const u = usuario(req);
     const s = req.query as Record<string, string>;
     return limparChat(u, { memoria: s.memoria ?? "", tenant: s.tenant ?? "" });
+  });
+
+  /* ------------------------------------------- v3.81: CONVERSAS (lista lateral do chat)
+     A conversa deixou de ser "a gaveta". Nada é apagado pela tela: DELETE arquiva.
+     /conversas/buscar vem ANTES de /:id para o Fastify não ler "buscar" como id. */
+
+  app.get("/conversas", async (req) => {
+    const u = usuario(req);
+    const s = req.query as Record<string, string>;
+    const lista = await listarConversas(u, {
+      memoria: s.memoria ?? "",
+      busca: s.busca ?? "",
+      incluirArquivadas: s.arquivadas === "1",
+      limite: s.limit ? Number(s.limit) : 60,
+      tenant: s.tenant ?? null,
+    });
+    return { ...lista, contagem: await contarConversas(u, s.tenant ?? null) };
+  });
+
+  app.post("/conversas", async (req, reply) => {
+    const u = usuario(req);
+    const b = corpo(req);
+    const memoria = vString(b.memoria, "memoria", { max: 128, def: "" });
+    const titulo = vString(b.titulo, "titulo", { max: 80, def: "" });
+    const id = await criarConversa(tenantFor(u, (b.tenant as string | null) ?? null), memoria.trim(), titulo);
+    reply.code(201);
+    return { id };
+  });
+
+  app.get("/conversas/buscar", async (req) => {
+    const u = usuario(req);
+    const s = req.query as Record<string, string>;
+    return buscarConversas(u, {
+      termo: s.termo ?? s.q ?? "",
+      limite: s.limit ? Number(s.limit) : 20,
+      desde: s.desde ?? null,
+      tenant: s.tenant ?? null,
+    });
+  });
+
+  app.get("/conversas/:id", async (req) => {
+    const u = usuario(req);
+    const s = req.query as Record<string, string>;
+    const id = Number((req.params as Record<string, string>).id);
+    return verConversa(u, id, { limite: s.limit ? Number(s.limit) : 200, tenant: s.tenant ?? null });
+  });
+
+  app.patch("/conversas/:id", async (req) => {
+    const u = usuario(req);
+    const b = corpo(req);
+    const s = req.query as Record<string, string>;
+    const id = Number((req.params as Record<string, string>).id);
+    if (typeof b.titulo === "string") return renomearConversa(u, id, b.titulo, s.tenant ?? null);
+    if (typeof b.arquivada === "boolean") return arquivarConversa(u, id, b.arquivada, s.tenant ?? null);
+    throw erro422("nada para mudar: mande titulo (texto) ou arquivada (true/false)");
+  });
+
+  /* arquiva (não apaga): a conversa sai da lista e o histórico continua no banco */
+  app.delete("/conversas/:id", async (req) => {
+    const u = usuario(req);
+    const s = req.query as Record<string, string>;
+    return arquivarConversa(u, Number((req.params as Record<string, string>).id), true, s.tenant ?? null);
   });
 
   /* ------------------------------------------- v3.18: básico que faltava no chat */
