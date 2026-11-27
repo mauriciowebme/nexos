@@ -1519,7 +1519,17 @@ test("nexos v2 — suíte completa", async (t) => {
         return {};
       }
     })();
-    f.check("sem prompt: o modelo recebe só a pergunta, sem system", eco.roles?.join(",") === "user" && eco.sys === null, eco);
+    /* v3.84.1: o índice de habilidades da conta entra SEMPRE no system (nome + quando usar).
+       Sem instrução, o system continua vazio FORA esse bloco — é isso que a regra v2.8 protege. */
+    const foraHabilidades = (txt: unknown) =>
+      txt === null || txt === undefined
+        ? null
+        : String(txt).replace(/\n*\[Habilidades desta conta[\s\S]*$/, "").trim() || null;
+    f.check(
+      "sem prompt: o modelo recebe so a pergunta (system vazio fora o indice de habilidades)",
+      eco.roles?.[eco.roles.length - 1] === "user" && foraHabilidades(eco.sys) === null,
+      eco,
+    );
     f.check("sem MCP ligado: nenhuma ferramenta vai no pedido", eco.ntools === 0 && r.json?.ferramentas_ligadas === 0, { eco, ligadas: r.json?.ferramentas_ligadas });
     f.check("sem ferramenta: resposta sai em 1 rodada", r.json?.rodadas === 1 && (r.json?.ferramentas ?? []).length === 0, { rodadas: r.json?.rodadas });
 
@@ -5461,6 +5471,26 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     r = await call("GET", `/habilidades/${idHab}`, { key: TESTKEY });
     f.check("v3.84 GET /habilidades/:id devolve o corpo escrito", r.status === 200 && String(r.json?.corpo).includes("IA local"), `${r.status} ${r.texto.slice(0, 120)}`);
 
+    /* 5b. BUSCA (v3.84.1): é o que a gestão precisava — achar por assunto, sem acento e sem caixa */
+    r = await call("GET", "/habilidades?termo=not%C3%ADcia", { key: TESTKEY });
+    f.check(
+      "v3.84.1 GET ?termo= acha sem acento (notícia -> noticias)",
+      r.status === 200 && (r.json?.habilidades ?? []).some((h: any) => h.nome === NOME) && r.json?.total >= 1,
+      `${r.status} ${r.texto.slice(0, 160)}`,
+    );
+    r = await call("GET", "/habilidades?termo=PAINEL%20EM%20HTML", { key: TESTKEY });
+    const achada = (r.json?.habilidades ?? []).find((h: any) => h.nome === NOME);
+    f.check(
+      "v3.84.1 busca no CORPO devolve trecho em volta e não o texto inteiro",
+      r.status === 200 && String(achada?.trecho ?? "").toLowerCase().includes("painel em html")
+        && String(achada?.trecho ?? "").length <= 200 && achada?.corpo === undefined,
+      JSON.stringify(achada ?? r.texto.slice(0, 140)),
+    );
+    r = await call("GET", "/habilidades?termo=zzzznadaaqui", { key: TESTKEY });
+    f.check("v3.84.1 termo sem casamento -> total 0", r.status === 200 && r.json?.total === 0, `${r.status} ${r.texto.slice(0, 120)}`);
+    r = await call("GET", "/habilidades?termo=a", { key: TESTKEY });
+    f.check("v3.84.1 termo curto (1 letra) -> 422", r.status === 422, `${r.status} ${r.texto.slice(0, 120)}`);
+
     /* 6. edita (o pedido muda e o corpo é preservado quando não vem no corpo do PATCH) */
     r = await call("PATCH", `/habilidades/${idHab}`, { key: TESTKEY, corpo: { quando_usar: "quando pedirem noticias de IA" } });
     f.check(
@@ -5515,6 +5545,16 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.check("v3.84 gerir_habilidades cria pela tool", m.status === 200 && idAgente > 0, JSON.stringify(m.dados).slice(0, 140));
     m = await mcpHab("gerir_habilidades", { acao: "remover", alvo: "suite82-criada-pelo-agente" });
     f.check("v3.84 gerir_habilidades remove pela tool", m.status === 200 && idAgente > 0, JSON.stringify(m.dados).slice(0, 140));
+
+    /* 9b. o agente busca pela tool (assunto, não nome exato) */
+    m = await mcpHab("gerir_habilidades", { acao: "buscar", termo: "painel html" });
+    f.check(
+      "v3.84.1 gerir_habilidades acao=buscar acha pelo assunto",
+      m.status === 200 && (m.dados?.habilidades ?? []).some((h: any) => h.nome === NOME),
+      JSON.stringify(m.dados).slice(0, 160),
+    );
+    m = await mcpHab("gerir_habilidades", { acao: "buscar", termo: "zzzznadaaqui" });
+    f.check("v3.84.1 buscar sem casamento devolve total 0", m.status === 200 && m.dados?.total === 0, JSON.stringify(m.dados).slice(0, 120));
 
     /* 10. isolamento: habilidade é texto da conta, outra conta não abre */
     r = await call("GET", `/habilidades/${idHab}`, { key: OPKEY });

@@ -31,7 +31,7 @@ function bool(name: string, def: boolean): boolean {
 }
 
 export const CONFIG = {
-  versao: "3.84.0",
+  versao: "3.84.1",
   model: process.env.NEXOS_MODEL ?? "nomic-ai/nomic-embed-text-v1.5",
   modelDir: process.env.NEXOS_MODEL_DIR ?? "/app/models",
 
