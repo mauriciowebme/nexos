@@ -74,7 +74,7 @@ curl -X POST https://nexos.techupsistemas.com/mcp \
 ## 3. As ferramentas — e o que cada conta recebe
 
 Medido em 30/10/2026 (v3.50.0), conta **operador** com o controle de máquinas ligado:
-**57 ferramentas** no `tools/list`. Conta comum vê **51** (as 6 de operador saem da lista).
+**59 ferramentas** no `tools/list`. Conta comum vê **53** (as 6 de operador saem da lista).
 
 | Grupo | Quantas | Ferramentas |
 |---|---|---|
