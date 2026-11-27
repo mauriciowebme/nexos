@@ -5329,6 +5329,93 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.fechar("conversas-3.81");
   });
 
+  /* v3.83 — busca nas conversas: título, acento, plural, stopword, compactação e limite.
+     O dono (27/11) perguntou se a ferramenta "funciona igual à minha" e se ela acha o que
+     está atrás de uma compactação. As mensagens entram por SQL para o teste não depender de
+     provedor, e a compactação é marcada mexendo só em `compactado_ate` — que é exatamente o
+     que o chat grava quando resume (o original NUNCA sai do banco). */
+  await bloco(t, "v3.83 — busca nas conversas: título, acento, plural e o que ficou compactado", async () => {
+    const f = fiscal();
+    const DB = process.env.DBCONTAINER ?? String(process.env.CONTAINER ?? "").replace("-api-", "-db-");
+    const sql = (q: string) =>
+      execFileSync("docker", ["exec", DB, "sh", "-c", `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "${q}"`], { encoding: "utf8" }).trim();
+    const mcpBusca = async (args: unknown) => {
+      const x = await call("POST", "/mcp", {
+        key: TESTKEY,
+        corpo: { jsonrpc: "2.0", id: 93, method: "tools/call", params: { name: "buscar_conversas", arguments: args } },
+      });
+      try {
+        return JSON.parse(String(x.json?.result?.content?.[0]?.text ?? "{}"));
+      } catch {
+        return {};
+      }
+    };
+
+    const idA = Number((await call("POST", "/conversas", { key: TESTKEY, corpo: { memoria: "suite83-a", titulo: "ORÇAMENTO da obra norte" } })).json?.id ?? 0);
+    const idB = Number((await call("POST", "/conversas", { key: TESTKEY, corpo: { memoria: "suite83-b", titulo: "assunto sem o termo" } })).json?.id ?? 0);
+    f.check("v3.83 duas conversas criadas em gavetas diferentes", idA > 0 && idB > 0 && idA !== idB, `${idA} / ${idB}`);
+    sql(`insert into chat_mensagens (tenant, memoria, conversa_id, papel, texto) values
+         ('teste','suite83-a',${idA},'user','a obra da norte anda devagar'),
+         ('teste','suite83-b',${idB},'user','o orçamento ficou alto e o orçamento precisa de revisão'),
+         ('teste','suite83-b',${idB},'assistant','ok')`);
+
+    /* 1. sem acento acha com acento (é o erro de digitação mais comum) */
+    let b = await mcpBusca({ termo: "orcamento" });
+    const ids1 = (b?.achados ?? []).map((a: any) => a.conversa_id);
+    f.check("v3.83 'orcamento' (sem cedilha) acha 'orçamento'", ids1.includes(idB), JSON.stringify(b?.resumo ?? {}).slice(0, 140));
+
+    /* 2. plural acha o singular (dicionário português, não substring) */
+    b = await mcpBusca({ termo: "orçamentos" });
+    f.check("v3.83 plural acha o singular", (b?.achados ?? []).some((a: any) => a.conversa_id === idB), JSON.stringify(b?.achados ?? []).slice(0, 140));
+
+    /* 3. o TÍTULO entra na busca, mesmo quando nenhuma mensagem repete o termo */
+    b = await mcpBusca({ termo: "norte" });
+    const porTitulo = (b?.achados ?? []).find((a: any) => a.conversa_id === idA);
+    f.check("v3.83 título casa mesmo sem mensagem com o termo", Boolean(porTitulo) && porTitulo.onde === "titulo", JSON.stringify(porTitulo ?? {}).slice(0, 160));
+
+    /* 4. título vem na frente do texto (relevância) */
+    b = await mcpBusca({ termo: "obra" });
+    f.check("v3.83 casamento de título fica no topo", (b?.achados ?? [])[0]?.onde === "titulo", JSON.stringify((b?.achados ?? [])[0] ?? {}).slice(0, 140));
+
+    /* 5. termo só com stopword não vira busca vazia (ILIKE segura o caso) */
+    b = await mcpBusca({ termo: "de" });
+    f.check("v3.83 stopword 'de' ainda devolve trechos (rede do ILIKE)", (b?.achados ?? []).length > 0, JSON.stringify(b?.resumo ?? {}));
+
+    /* 6. o que está atrás da compactação continua achável */
+    const idMsg = Number(sql(`select id from chat_mensagens where conversa_id = ${idB} and texto like '%orçamento%' order by id limit 1`) || 0);
+    sql(`update conversas set compactado_ate = ${idMsg} where id = ${idB}`);
+    b = await mcpBusca({ termo: "orcamento" });
+    f.check(
+      "v3.83 mensagem ANTERIOR ao corte da compactação continua sendo achada",
+      (b?.achados ?? []).some((a: any) => a.conversa_id === idB && Number(a.mensagem_id) === idMsg),
+      `corte=${idMsg} :: ${JSON.stringify(b?.achados ?? []).slice(0, 200)}`,
+    );
+
+    /* 7. limite respeitado e resumo coerente com o que voltou */
+    b = await mcpBusca({ termo: "de", limite: 2 });
+    f.check(
+      "v3.83 limite corta a lista e o resumo diz o que voltou",
+      (b?.achados ?? []).length <= 2 && b?.resumo?.achados === (b?.achados ?? []).length,
+      JSON.stringify(b?.resumo ?? {}),
+    );
+
+    /* 8. isolamento: outra conta não acha nada */
+    const outro = await call("POST", "/mcp", {
+      key: OPKEY,
+      corpo: { jsonrpc: "2.0", id: 94, method: "tools/call", params: { name: "buscar_conversas", arguments: { termo: "orcamento" } } },
+    });
+    const achadosOutro = String(outro.json?.result?.content?.[0]?.text ?? "");
+    f.check(
+      "v3.83 busca de outra conta não vê estas conversas",
+      !achadosOutro.includes(`"conversa_id":${idA}`) && !achadosOutro.includes(`"conversa_id":${idB}`),
+      achadosOutro.slice(0, 120),
+    );
+
+    sql(`delete from chat_mensagens where conversa_id in (${idA},${idB})`);
+    sql(`delete from conversas where id in (${idA},${idB})`);
+    f.fechar("busca-3.83");
+  });
+
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {
     const f = fiscal();
     for (let i = 0; i < 10; i++) {
