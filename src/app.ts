@@ -77,6 +77,7 @@ import {
   verConversa,
 } from "./conversas";
 import {
+  buscarHabilidades,
   criarHabilidade,
   editarHabilidade,
   favoritarHabilidade,
@@ -1407,6 +1408,8 @@ export function criarApp(): FastifyInstance {
   app.get("/habilidades", async (req) => {
     const u = usuario(req);
     const s = req.query as Record<string, string>;
+    /* v3.84.1: ?termo= procura em nome, quando usar e corpo (sem acento) e devolve o trecho */
+    if (s.termo && s.termo.trim()) return buscarHabilidades(u, s.termo, s.favoritas === "1");
     const habilidades = await listarHabilidades(u, s.favoritas === "1");
     return { habilidades, total: habilidades.length };
   });

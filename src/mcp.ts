@@ -147,9 +147,10 @@ export const TOOLS: Tool[] = [
   {
     name: "gerir_habilidades",
     description:
-      "Cuida das HABILIDADES desta conta: atalhos escritos pelo usuario (nome + quando usar + corpo com o pedido/instrucao completo). A habilidade marcada como favorita aparece como cartao na tela inicial do chat. Uma ferramenta, campo `acao`: listar | ler | criar | editar | remover | favoritar. Use quando a pessoa pedir para criar/ajustar um atalho ('cria uma habilidade que...', 'muda aquela de planilha'), para listar o que existe, ou para marcar/desmarcar os favoritos da home.",
+      "Cuida das HABILIDADES desta conta: atalhos escritos pelo usuario (nome + quando usar + corpo com o pedido/instrucao completo). A habilidade marcada como favorita aparece como cartao na tela inicial do chat. Uma ferramenta, campo `acao`: listar | buscar | ler | criar | editar | remover | favoritar. Use `buscar` (campo `termo`) quando houver muitas habilidades ou quando a pessoa citar um assunto: devolve so as que casam, com o trecho em volta. Use quando a pessoa pedir para criar/ajustar um atalho ('cria uma habilidade que...', 'muda aquela de planilha'), para listar o que existe, ou para marcar/desmarcar os favoritos da home.",
     inputSchema: { type: "object", properties: {
-      acao: { type: "string", description: "listar | ler | criar | editar | remover | favoritar" },
+      acao: { type: "string", description: "listar | buscar | ler | criar | editar | remover | favoritar" },
+      termo: { type: "string", description: "palavra a procurar em nome, quando usar e corpo (acao buscar)" },
       alvo: { type: "string", description: "nome ou id da habilidade (editar, ler, remover, favoritar)" },
       nome: { type: "string", description: "nome curto da habilidade (criar/editar) — e o titulo do cartao" },
       quando_usar: { type: "string", description: "uma linha: em que situacao usar (aparece no indice do prompt)" },
@@ -897,6 +898,9 @@ async function executarTool(
         const lista = await h.listarHabilidades(user, args.favorita === true);
         return { total: lista.length, habilidades: lista.map((x) => ({ id: x.id, nome: x.nome, quando_usar: x.quando_usar, favorita: x.favorita, corpo: x.corpo })) };
       }
+      if (acao === "buscar") {
+        return h.buscarHabilidades(user, args.termo ?? args.alvo ?? args.nome, args.favorita === true);
+      }
       if (acao === "ler") return h.obterHabilidade(user, args.alvo ?? args.nome);
       if (acao === "criar") return h.criarHabilidade(user, args as Record<string, unknown>);
       if (acao === "editar") return h.editarHabilidade(user, args.alvo ?? args.nome, args as Record<string, unknown>);
@@ -904,7 +908,7 @@ async function executarTool(
       if (acao === "favoritar") {
         return h.favoritarHabilidade(user, args.alvo ?? args.nome, args.favorita !== false);
       }
-      throw erro422("acao invalida: use listar, ler, criar, editar, remover ou favoritar");
+      throw erro422("acao invalida: use listar, buscar, ler, criar, editar, remover ou favoritar");
     }
     case "ler_habilidade": {
       const { obterHabilidade } = await import("./habilidades");

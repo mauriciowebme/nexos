@@ -81,6 +81,80 @@ export async function listarHabilidades(user: Usuario, soFavoritas = false): Pro
   return r.rows.map((l) => ({ ...l, id: Number(l.id), ordem: Number(l.ordem) }));
 }
 
+/** acentos trocados 1:1 pela letra-base (mantém o índice igual ao do texto original) */
+const COM_ACENTO = "áàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ";
+const SEM_ACENTO = "aaaaaeeeeiiiiooooouuuucnAAAAAEEEEIIIIOOOOOUUUUCN";
+
+function semAcento(txt: string): string {
+  let saida = "";
+  for (const c of txt) {
+    const i = COM_ACENTO.indexOf(c);
+    saida += i >= 0 ? SEM_ACENTO[i] : c.toLowerCase();
+  }
+  return saida;
+}
+
+/** pedaço do corpo em volta do primeiro casamento — é o que o agente precisa ver para escolher */
+function trechoEmVolta(corpo: string, palavras: string[]): string {
+  const plano = semAcento(corpo);
+  let i = -1;
+  let termo = palavras[0] ?? "";
+  for (const w of palavras) {
+    const p = plano.indexOf(semAcento(w));
+    if (p >= 0 && (i < 0 || p < i)) {
+      i = p;
+      termo = w;
+    }
+  }
+  if (i < 0) return corpo.slice(0, 120).trim();
+  const ini = Math.max(0, i - 60);
+  const fim = Math.min(corpo.length, i + termo.length + 80);
+  return `${ini > 0 ? "…" : ""}${corpo.slice(ini, fim).trim()}${fim < corpo.length ? "…" : ""}`;
+}
+
+/**
+ * Busca por termo em nome + quando usar + corpo. É o que faltava na gestão: com 40
+ * habilidades, `listar` despeja tudo e o agente escolhe mal. Aqui ele acha pelo assunto
+ * (sem acento, sem caixa) e recebe só o trecho em volta do casamento.
+ */
+export async function buscarHabilidades(
+  user: Usuario,
+  termo: unknown,
+  soFavoritas = false,
+): Promise<{
+  termo: string;
+  total: number;
+  habilidades: Array<{ id: number; nome: string; quando_usar: string; favorita: boolean; trecho: string }>;
+}> {
+  const t = String(termo ?? "").trim();
+  /* cada palavra precisa casar (E, não a frase inteira): "painel html" acha "painel em HTML" */
+  const palavras = t.split(/\s+/).filter((w) => w.length >= 2);
+  if (!palavras.length) throw erro422("informe um termo de busca com pelo menos 2 caracteres");
+  const alvo = "nexos_unaccent(lower(coalesce(nome, '') || ' ' || coalesce(quando_usar, '') || ' ' || coalesce(corpo, '')))";
+  const filtros = palavras
+    .map((_, i) => `${alvo} LIKE '%' || nexos_unaccent(lower($${i + 2})) || '%'`)
+    .join(" AND ");
+  const r = await q<Habilidade>(
+    `SELECT ${CAMPOS} FROM habilidades
+      WHERE tenant = $1 ${soFavoritas ? "AND favorita" : ""}
+        AND ${filtros}
+      ORDER BY favorita DESC, ordem, nome
+      LIMIT 20`,
+    [user.tenant, ...palavras],
+  );
+  return {
+    termo: t,
+    total: r.rows.length,
+    habilidades: r.rows.map((l) => ({
+      id: Number(l.id),
+      nome: l.nome,
+      quando_usar: l.quando_usar,
+      favorita: l.favorita,
+      trecho: trechoEmVolta(String(l.corpo ?? ""), palavras),
+    })),
+  };
+}
+
 export async function obterHabilidade(user: Usuario, idOuNome: unknown): Promise<Habilidade> {
   const bruto = String(idOuNome ?? "").trim();
   if (!bruto) throw erro422("informe a habilidade (nome ou id)");
