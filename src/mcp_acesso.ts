@@ -45,6 +45,8 @@ const GRUPOS: Record<string, Grupo> = {
   list_gavetas: "gavetas", create_gaveta: "gavetas", delete_gaveta: "gavetas",
   health: "operação", list_jobs: "operação", chat: "operação", config_provider: "operação",
   mostrar_tela: "operação", web_search: "operação", web_open: "operação", rodar_python: "operação",
+  /* v3.84: habilidades da conta — atalhos que o agente lê e administra */
+  gerir_habilidades: "operação", ler_habilidade: "operação",
   listar_usuarios: "usuários", criar_usuario: "usuários", apagar_usuario: "usuários",
   esquecimento: "usuários", listar_mcp: "usuários", gerir_mcp: "usuários",
   gerar_pareamento: "pareamento",

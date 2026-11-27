@@ -18,6 +18,7 @@ import { q } from "./db";
 import { apertarRodada, CHARS_POR_TOKEN, custoDoPayload, type MsgChat, montarPayload, OPCOES_PADRAO, type Opcoes } from "./compactar";
 import { abrirAnexo, type AnexoMeta } from "./anexos";
 import { conversaDoTurno, marcarCompactacao, tocarConversa } from "./conversas";
+import { garantirHabilidades, indiceHabilidades } from "./habilidades";
 import { podeVerProvedor } from "./provedores";
 import { MAX_TELAS_TURNO, htmlParcial, type Tela } from "./telas";
 import {
@@ -229,6 +230,8 @@ export async function initProvider(): Promise<void> {
   await q(`ALTER TABLE chat_tarefas ADD COLUMN IF NOT EXISTS conversa_id BIGINT`);
   await q(`CREATE INDEX IF NOT EXISTS chat_conversa_idx ON chat_mensagens (conversa_id, id)`);
   await q(`CREATE INDEX IF NOT EXISTS conversas_tenant_idx ON conversas (tenant, atualizado_em DESC)`);
+  /* v3.84: habilidades da conta (atalhos que viram cartão na home) — DDL idempotente no boot */
+  await garantirHabilidades();
   /* v3.83: busca nas conversas usa o dicionário português SEM depender do acento
      ("orcamento" acha "orçamento"). `unaccent` é STABLE, então o índice de expressão
      precisa de um embrulho IMMUTABLE — daí a função, criada aqui no boot junto com a
@@ -1428,8 +1431,12 @@ export async function responderChat(
      quantas foram, porque "sumiu sem dizer" é pior que sumir.
      Regra v2.8 mantida: nenhuma instrução embutida — system prompt vazio = modelo conversa puro. */
   const { msgs: historico, ids: idsHistorico } = await mensagensDoHistorico(tenant, conversaId, cfg.memoria_turnos);
+  /* v3.84: o índice das habilidades entra SEMPRE e é curto (nome + quando usar); o corpo
+     completo só desce quando o agente chama `ler_habilidade`. `cfg.system_prompt` continua
+     limpo porque ele é a instrução que a tela mostra e grava. */
+  const indiceHabs = await indiceHabilidades(tenant);
   const plano = montarPayload({
-    system: cfg.system_prompt,
+    system: cfg.system_prompt + indiceHabs,
     historico,
     pergunta,
     toolsTokens,

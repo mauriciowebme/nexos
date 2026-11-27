@@ -77,6 +77,14 @@ import {
   verConversa,
 } from "./conversas";
 import {
+  criarHabilidade,
+  editarHabilidade,
+  favoritarHabilidade,
+  listarHabilidades,
+  obterHabilidade,
+  removerHabilidade,
+} from "./habilidades";
+import {
   listarProvedores,
   salvarProvedor,
   definirPadrao,
@@ -1391,6 +1399,44 @@ export function criarApp(): FastifyInstance {
     const u = usuario(req);
     const s = req.query as Record<string, string>;
     return arquivarConversa(u, Number((req.params as Record<string, string>).id), true, s.tenant ?? null);
+  });
+
+  /* ------------------------------------------- v3.84: habilidades (atalhos da conta)
+     A própria conta escreve o pedido; o que for favorito vira cartão na tela inicial do chat.
+     Escopo é sempre o tenant da chave (nada de ?tenant= aqui: é texto pessoal, não acervo). */
+  app.get("/habilidades", async (req) => {
+    const u = usuario(req);
+    const s = req.query as Record<string, string>;
+    const habilidades = await listarHabilidades(u, s.favoritas === "1");
+    return { habilidades, total: habilidades.length };
+  });
+
+  app.post("/habilidades", async (req, reply) => {
+    const h = await criarHabilidade(usuario(req), corpo(req));
+    reply.code(201);
+    return h;
+  });
+
+  app.get("/habilidades/:id", async (req) => {
+    const u = usuario(req);
+    return obterHabilidade(u, (req.params as Record<string, string>).id);
+  });
+
+  app.patch("/habilidades/:id", async (req) => {
+    const u = usuario(req);
+    return editarHabilidade(u, (req.params as Record<string, string>).id, corpo(req));
+  });
+
+  /* favoritar/desfavoritar é o que liga e desliga o cartão da home */
+  app.post("/habilidades/:id/favorita", async (req) => {
+    const u = usuario(req);
+    const b = corpo(req);
+    return favoritarHabilidade(u, (req.params as Record<string, string>).id, b.favorita !== false);
+  });
+
+  app.delete("/habilidades/:id", async (req) => {
+    const u = usuario(req);
+    return removerHabilidade(u, (req.params as Record<string, string>).id);
   });
 
   /* ------------------------------------------- v3.18: básico que faltava no chat */

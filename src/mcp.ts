@@ -1,6 +1,6 @@
 /** MCP sobre POST /mcp — JSON-RPC 2.0 stateless, espelho das rotas REST. */
 import { Usuario, tenantFor } from "./config";
-import { HttpError, erro403 } from "./errors";
+import { HttpError, erro403, erro422 } from "./errors";
 import {
   criarGaveta,
   deleteDoc,
@@ -143,6 +143,27 @@ export const TOOLS: Tool[] = [
       conversa_id: { type: "integer", description: "id devolvido por buscar_conversas" },
       limite: { type: "integer", description: "quantas mensagens (padrao 100, max 500)" },
       }, required: ["conversa_id"] },
+  },
+  {
+    name: "gerir_habilidades",
+    description:
+      "Cuida das HABILIDADES desta conta: atalhos escritos pelo usuario (nome + quando usar + corpo com o pedido/instrucao completo). A habilidade marcada como favorita aparece como cartao na tela inicial do chat. Uma ferramenta, campo `acao`: listar | ler | criar | editar | remover | favoritar. Use quando a pessoa pedir para criar/ajustar um atalho ('cria uma habilidade que...', 'muda aquela de planilha'), para listar o que existe, ou para marcar/desmarcar os favoritos da home.",
+    inputSchema: { type: "object", properties: {
+      acao: { type: "string", description: "listar | ler | criar | editar | remover | favoritar" },
+      alvo: { type: "string", description: "nome ou id da habilidade (editar, ler, remover, favoritar)" },
+      nome: { type: "string", description: "nome curto da habilidade (criar/editar) — e o titulo do cartao" },
+      quando_usar: { type: "string", description: "uma linha: em que situacao usar (aparece no indice do prompt)" },
+      corpo: { type: "string", description: "o pedido/instrucao completo, escrito como a pessoa falaria (criar/editar)" },
+      favorita: { type: "boolean", description: "true = cartao na tela inicial (criar/favoritar)" },
+      }, required: ["acao"] },
+  },
+  {
+    name: "ler_habilidade",
+    description:
+      "Le o CORPO completo de uma habilidade da conta pelo nome. Use quando o pedido da pessoa bater com uma habilidade listada no indice do prompt, ANTES de responder: o indice traz so o nome e quando usar, o texto com o passo a passo esta aqui.",
+    inputSchema: { type: "object", properties: {
+      nome: { type: "string", description: "nome da habilidade (como aparece no indice)" },
+      }, required: ["nome"] },
   },
   {
     name: "ingest",
@@ -868,6 +889,27 @@ async function executarTool(
         segundos: args.segundos === undefined ? undefined : Number(args.segundos),
         dependencias: args.dependencias,
       });
+    }
+    case "gerir_habilidades": {
+      const h = await import("./habilidades");
+      const acao = String(args.acao ?? "").trim().toLowerCase();
+      if (acao === "listar") {
+        const lista = await h.listarHabilidades(user, args.favorita === true);
+        return { total: lista.length, habilidades: lista.map((x) => ({ id: x.id, nome: x.nome, quando_usar: x.quando_usar, favorita: x.favorita, corpo: x.corpo })) };
+      }
+      if (acao === "ler") return h.obterHabilidade(user, args.alvo ?? args.nome);
+      if (acao === "criar") return h.criarHabilidade(user, args as Record<string, unknown>);
+      if (acao === "editar") return h.editarHabilidade(user, args.alvo ?? args.nome, args as Record<string, unknown>);
+      if (acao === "remover") return h.removerHabilidade(user, args.alvo ?? args.nome);
+      if (acao === "favoritar") {
+        return h.favoritarHabilidade(user, args.alvo ?? args.nome, args.favorita !== false);
+      }
+      throw erro422("acao invalida: use listar, ler, criar, editar, remover ou favoritar");
+    }
+    case "ler_habilidade": {
+      const { obterHabilidade } = await import("./habilidades");
+      const x = await obterHabilidade(user, args.nome ?? args.alvo);
+      return { nome: x.nome, quando_usar: x.quando_usar, corpo: x.corpo, favorita: x.favorita };
     }
     case "buscar_conversas": {
       const { buscarConversas } = await import("./conversas");
