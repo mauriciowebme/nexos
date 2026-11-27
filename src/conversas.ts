@@ -191,7 +191,17 @@ export async function marcarCompactacao(tenant: string, id: number, ate: number 
   ]);
 }
 
-/** busca em TODAS as conversas da conta: devolve a conversa + os trechos que casaram. */
+/** busca em TODAS as conversas da conta (v3.83): título + texto, com relevância.
+ *
+ *  Antes era só `ILIKE` no texto e ordenado por mensagem mais nova — achava, mas não
+ *  achava por ideia nem pelo título, e o trecho certo podia ficar fora do limite.
+ *  Agora: (1) o TÍTULO entra na busca (a conversa aparece mesmo que nenhuma mensagem
+ *  repita o termo); (2) o texto usa o dicionário `portuguese` do Postgres com
+ *  `ts_rank` (radical: "notas" acha "nota"), mantendo o `ILIKE` como rede para
+ *  termo curto/sem radical (stopword, número, código com hífen); (3) a ordem é
+ *  relevância → mais recente. Compactação NÃO é filtro: as mensagens antigas
+ *  continuam no banco e continuam sendo achadas (é o que o dono pediu, 27/11).
+ */
 export async function buscarConversas(
   user: Usuario,
   opts: { termo: string; limite?: number; desde?: string | null; tenant?: string | null },
@@ -200,31 +210,83 @@ export async function buscarConversas(
   const termo = String(opts.termo ?? "").trim();
   if (termo.length < 2) throw erro422("termo muito curto (mínimo 2 caracteres)");
   const limite = Math.min(Math.max(Number(opts.limite ?? 20), 1), 100);
-  const args: unknown[] = [tenant, `%${termo}%`, limite];
+  const gosto = `%${termo}%`;
+
+  /* 1) conversas cujo TÍTULO casa com o termo (o trecho vem da última mensagem) */
+  const argsTitulo: unknown[] = [tenant, gosto, limite];
+  let filtroTitulo = "";
+  if (opts.desde) {
+    argsTitulo.push(opts.desde);
+    filtroTitulo = ` AND c.atualizado_em >= $${argsTitulo.length}`;
+  }
+  const titulos = await q(
+    `SELECT c.id AS conversa_id, c.titulo, c.memoria, c.atualizado_em,
+            u.id AS mensagem_id, u.papel, u.texto, u.criado_em
+       FROM conversas c
+       LEFT JOIN LATERAL (
+         SELECT m.id, m.papel, m.texto, m.criado_em FROM chat_mensagens m
+          WHERE m.conversa_id = c.id ORDER BY m.id DESC LIMIT 1
+       ) u ON true
+      WHERE c.tenant = $1 AND nexos_unaccent(c.titulo) ILIKE nexos_unaccent($2)${filtroTitulo}
+      ORDER BY c.atualizado_em DESC LIMIT $3`,
+    argsTitulo,
+  );
+
+  /* 2) mensagens: relevância (português) OR literal, do mais relevante para o mais antigo */
+  const args: unknown[] = [tenant, termo, gosto, limite];
   let filtroData = "";
   if (opts.desde) {
     args.push(opts.desde);
     filtroData = ` AND m.criado_em >= $${args.length}`;
   }
-  const r = await q(
-    `SELECT c.id AS conversa_id, c.titulo, c.atualizado_em, c.memoria,
-            m.id AS mensagem_id, m.papel, m.texto, m.criado_em
+  const mensagens = await q(
+    `SELECT c.id AS conversa_id, c.titulo, c.memoria, c.atualizado_em,
+            m.id AS mensagem_id, m.papel, m.texto, m.criado_em,
+            ts_rank(to_tsvector('portuguese', nexos_unaccent(coalesce(m.texto, ''))),
+                    websearch_to_tsquery('portuguese', nexos_unaccent($2))) AS relevancia
        FROM chat_mensagens m JOIN conversas c ON c.id = m.conversa_id
-      WHERE c.tenant = $1 AND m.texto ILIKE $2${filtroData}
-      ORDER BY m.id DESC LIMIT $3`,
+      WHERE c.tenant = $1${filtroData}
+        AND (nexos_unaccent(m.texto) ILIKE nexos_unaccent($3)
+             OR to_tsvector('portuguese', nexos_unaccent(coalesce(m.texto, '')))
+                @@ websearch_to_tsquery('portuguese', nexos_unaccent($2)))
+      ORDER BY relevancia DESC, m.id DESC LIMIT $4`,
     args,
   );
+
+  const limpo = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").slice(0, 400);
+  const achados: Array<Record<string, unknown>> = [];
+  const vistos = new Set<string>();
+  const põe = (x: any, onde: "titulo" | "mensagem", rel: number) => {
+    const chave = `${Number(x.conversa_id)}#${onde === "titulo" ? "t" : Number(x.mensagem_id)}`;
+    if (vistos.has(chave)) return;
+    vistos.add(chave);
+    achados.push({
+      conversa_id: Number(x.conversa_id),
+      titulo: String(x.titulo ?? "") || "conversa sem título",
+      onde,
+      mensagem_id: x.mensagem_id == null ? null : Number(x.mensagem_id),
+      papel: x.papel ?? null,
+      trecho: limpo(x.texto),
+      quando: x.criado_em ?? x.atualizado_em,
+      // título é o casamento mais forte que existe: fica acima de qualquer rank de texto
+      relevancia: onde === "titulo" ? 1 : Number(x.relevancia ?? 0),
+    });
+  };
+  for (const x of titulos.rows) põe(x, "titulo", 1);
+  for (const x of mensagens.rows) põe(x, "mensagem", Number(x.relevancia ?? 0));
+
+  const cortados = achados.slice(0, limite);
   return {
     tenant,
     termo,
-    achados: r.rows.map((x: any) => ({
-      conversa_id: Number(x.conversa_id),
-      titulo: String(x.titulo ?? "") || "conversa sem título",
-      mensagem_id: Number(x.mensagem_id),
-      papel: x.papel,
-      trecho: String(x.texto ?? "").replace(/\s+/g, " ").slice(0, 400),
-      quando: x.criado_em,
-    })),
+    /* quantos voltaram × quantos vieram de título × de texto (o modelo e o teste sabem o que pesou) */
+    resumo: {
+      achados: cortados.length,
+      por_titulo: Math.min(titulos.rows.length, cortados.length),
+      por_texto: mensagens.rows.length,
+      limite,
+    },
+    achados: cortados,
   };
 }
 

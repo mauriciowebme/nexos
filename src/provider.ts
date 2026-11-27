@@ -229,6 +229,16 @@ export async function initProvider(): Promise<void> {
   await q(`ALTER TABLE chat_tarefas ADD COLUMN IF NOT EXISTS conversa_id BIGINT`);
   await q(`CREATE INDEX IF NOT EXISTS chat_conversa_idx ON chat_mensagens (conversa_id, id)`);
   await q(`CREATE INDEX IF NOT EXISTS conversas_tenant_idx ON conversas (tenant, atualizado_em DESC)`);
+  /* v3.83: busca nas conversas usa o dicionário português SEM depender do acento
+     ("orcamento" acha "orçamento"). `unaccent` é STABLE, então o índice de expressão
+     precisa de um embrulho IMMUTABLE — daí a função, criada aqui no boot junto com a
+     extensão e o índice (tudo idempotente, como as demais peças do boot). */
+  await q(`CREATE EXTENSION IF NOT EXISTS unaccent`);
+  await q(`CREATE OR REPLACE FUNCTION nexos_unaccent(txt text) RETURNS text
+           LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
+           AS $$ SELECT public.unaccent('public.unaccent'::regdictionary, txt) $$`);
+  await q(`DROP INDEX IF EXISTS chat_texto_tsv_idx`);
+  await q(`CREATE INDEX IF NOT EXISTS chat_texto_tsv_idx ON chat_mensagens USING gin (to_tsvector('portuguese', nexos_unaccent(coalesce(texto, ''))))`);
   /* backfill idempotente: uma conversa por (conta, gaveta) que tenha mensagem órfã */
   await q(
     `INSERT INTO conversas (tenant, memoria, titulo, criado_em, atualizado_em)

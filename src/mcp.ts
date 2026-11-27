@@ -128,7 +128,7 @@ export const TOOLS: Tool[] = [
   {
     name: "buscar_conversas",
     description:
-      "Busca por TEXTO em todas as conversas do chat desta conta (as suas e as da conta em foco). Devolve a conversa, o trecho que casou e o id da mensagem. Use quando a pessoa citar algo dito antes ('aquilo que a gente falou sobre X') e você precisar achar em qual conversa foi.",
+      "Busca por TEXTO em todas as conversas do chat desta conta (as suas e as da conta em foco), incluindo o TÍTULO de cada conversa e as mensagens que já foram compactadas (o resumo não apaga o original). Dicionário português + literal, ordenado por relevância. Devolve a conversa, onde casou (titulo|mensagem), o trecho e o id da mensagem. Use quando a pessoa citar algo dito antes ('aquilo que a gente falou sobre X') e você precisar achar em qual conversa foi.",
     inputSchema: { type: "object", properties: {
       termo: { type: "string", description: "texto procurado (minimo 2 caracteres)" },
       limite: { type: "integer", description: "quantos trechos devolver (padrao 20, max 100)" },
