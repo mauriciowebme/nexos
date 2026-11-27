@@ -1530,6 +1530,66 @@
     background: var(--sup-3, #1d2532);
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   }
+  /* v3.83: trilho aberto (208 px) — os nomes voltam a aparecer e a marca ganha o "nexos".
+     Fechado continua exatamente como era (64 px, só ícone). */
+  .rail-topo {
+    @apply mb-1 flex w-full flex-col items-center gap-1;
+  }
+  .rail-aberto {
+    width: 208px;
+    align-items: stretch;
+  }
+  .rail-aberto .rail-topo {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 2px;
+  }
+  .rail-aberto .nav-item {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 0 10px;
+    font-size: 13.5px;
+  }
+  .rail-aberto .rail-nome {
+    display: inline;
+  }
+  .rail-aberto .rail-logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: auto;
+    padding-left: 4px;
+  }
+  .rail-alternar {
+    @apply grid h-[28px] w-[28px] flex-none place-items-center rounded-[8px] border border-borda
+      bg-sup2 text-[14px] leading-none text-txt2 hover:border-bordaforte hover:bg-sup3 hover:text-txt;
+  }
+  .rail-nome {
+    display: none;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--txt);
+  }
+  .rail-aberto .rail-user {
+    align-items: stretch;
+  }
+  .rail-aberto .rail-user .rail-avatar {
+    width: auto;
+    padding: 0 8px;
+    justify-content: flex-start;
+  }
+  .rail-aberto .rail-versao {
+    padding-left: 8px;
+  }
+  /* o flyout das Configurações sai da borda direita do trilho, aberta ou fechada */
+  .rail-aberto .rail-grupo .nav-rail {
+    /* fora do trilho (191 do item + 12 = 211 > 208): o flyout não cobre o nome do item */
+    left: calc(100% + 12px);
+  }
   .rail-logo {
     @apply mb-2 grid h-[40px] w-[40px] place-items-center text-[18px] text-verde;
   }

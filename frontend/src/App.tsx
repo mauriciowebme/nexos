@@ -235,6 +235,18 @@ export default function App() {
      servidor); trocar de gaveta zera a escolha, porque a conversa é de uma gaveta. */
   const [conversaSel, setConversaSel] = useState<number | null>(null);
   const [recargaConversas, setRecargaConversas] = useState(0);
+  /* v3.83 (dono, 27/11): o trilho de 64 px escondia os nomes e nem o "nexos" aparecia.
+     Agora ele abre para 208 px e lembra a escolha (localStorage). */
+  const [railAberto, setRailAberto] = useState(() => {
+    try { return localStorage.getItem("mr_rail") === "1"; } catch { return false; }
+  });
+  const alternarRail = () => {
+    setRailAberto((v) => {
+      const novo = !v;
+      try { localStorage.setItem("mr_rail", novo ? "1" : "0"); } catch { /* modo privado */ }
+      return novo;
+    });
+  };
   const [resetChat, setResetChat] = useState(0);
   const [listaAberta, setListaAberta] = useState(false);
   useEffect(() => {
@@ -297,10 +309,25 @@ export default function App() {
 
   const { tenant, memoria, operador, nome } = sessao.sessao;
   const titulo = vista === "gavetas" && !operador ? "Gavetas" : TITULOS[vista];
-  const lateral = (
-    <aside className="rail" aria-label="menu">
-      <div className="rail-logo" title="nexos">
-        ◆
+  const lateralDe = (expandido: boolean, comBotao: boolean) => (
+    <aside className={"rail" + (expandido ? " rail-aberto" : "")} aria-label="menu">
+      {/* v3.83: marca com nome quando aberto; o ⋮⋮ abre/fecha e a escolha fica lembrada */}
+      <div className="rail-topo">
+        <div className="rail-logo" title="nexos">
+          ◆<span className="rail-nome">nexos</span>
+        </div>
+        {comBotao && (
+          <button
+            id="railAlternar"
+            className="rail-alternar"
+            aria-label={expandido ? "recolher o menu" : "expandir o menu"}
+            aria-expanded={expandido}
+            title={expandido ? "recolher o menu" : "expandir o menu (ler os nomes)"}
+            onClick={alternarRail}
+          >
+            {expandido ? "‹" : "›"}
+          </button>
+        )}
       </div>
 
       {/* Um menu só, na ordem do dono. No trilho o item é ícone; o nome vive no title
@@ -385,7 +412,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-[100dvh]">
-      <div className="sticky top-0 hidden h-[100dvh] lg:block">{lateral}</div>
+      <div className="sticky top-0 hidden h-[100dvh] lg:block">{lateralDe(railAberto, true)}</div>
 
       {/* v3.81: no Chat, a coluna de conversas mora entre o trilho e a conversa */}
       {vista === "chat" && (
@@ -434,7 +461,7 @@ export default function App() {
       {menuAberto && (
         <div className="fixed inset-0 z-30 lg:hidden">
           <div className="absolute inset-0 bg-black/60" onClick={() => setMenuAberto(false)} />
-          <div className="absolute inset-y-0 left-0 border-r border-borda bg-sup shadow-painel">{lateral}</div>
+          <div className="absolute inset-y-0 left-0 border-r border-borda bg-sup shadow-painel">{lateralDe(true, false)}</div>
         </div>
       )}
 
