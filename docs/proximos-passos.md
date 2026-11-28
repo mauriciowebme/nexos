@@ -1,6 +1,6 @@
 # Próximos passos — Nexos
 
-> **Última atualização:** 2026-11-27 · **No ar:** 3.83.0 · **Na árvore, ainda não publicada:** — · **Dono:** Mauricio
+> **Última atualização:** 2026-11-27 · **No ar:** 3.84.1 · **Na árvore, ainda não publicada:** 3.85.0 (T067) · **Dono:** Mauricio
 
 Este arquivo tem **só o que está em aberto** — as tarefas entregues foram removidas na limpeza de
 30/10 (o histórico fica no `git log`). Execução de qualquer T### exige OK explícito do Mauricio.
@@ -14,6 +14,7 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 | T062 | Nenhuma cota por conta e nenhum limite de ritmo | armazenamento | 🟡 Média | ✅ Decidido (19/11) — sem código | [#t062](#t062) |
 | T063 | Por onde o usuário chega até o nexos (Tailscale × HTTPS) | acesso | 🟡 Média | 📋 Aguardando OK | [#t063](#t063) |
 | T064 | Sandbox Python: teto de memória que morde e erro que chega mudo | sandbox | 🟡 Média | 📋 Aguardando OK | [#t064](#t064) |
+| T067 | Tela Arquivos vira pasta de verdade (pastas, lixeira de 30 dias, escopo de conta) | arquivos + painel | 🟠 Alta | 🚧 Na árvore (3.85.0) — aguarda OK para commit/deploy | [#t067](#t067) |
 
 > **Fila reaberta em 19/11/2026:** T059 a T064, todas apontadas pela avaliação read-only de prontidão
 > para receber usuários (o dono perguntou se dá para dar acesso a eles). **Nenhuma executada** — aguardam
@@ -148,6 +149,20 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
 | **Impacto medido** | Limita hoje o tamanho de planilha que o Python do nexos consegue carregar: acima de ~100 mil linhas no caminho clássico do openpyxl, quebra; e o modelo que recebe o erro mudo de tempo repete a tentativa igual (a guarda de repetição da 3.74 segura, mas o turno é perdido). |
 | **Prova exigida na execução** | Mesmo par de sondas com o teto novo: `load_workbook` normal das 100 mil linhas **passa**, e o teste de contrato mostrando o script de tempo estourado devolvendo aviso legível no `erro` em vez de campo vazio. Medir de quebra se a escrita em `/tmp` fora da conta segue barrada (Landlock ativo ou não, registrado com a resposta). |
 
+### T067 — Tela Arquivos vira pasta de verdade (pastas, lixeira de 30 dias, escopo de conta)
+
+| Campo | Conteúdo |
+|---|---|
+| **Módulo** | arquivos (`src/arquivos.ts`, `src/anexos.ts`, rotas em `src/app.ts`, `src/faxina.ts`) + painel (`frontend/src/components/Explorador.tsx`, `Arquivos.tsx`, `tipoAnexo.ts`) |
+| **Prioridade** | 🟠 Alta — era a única tela em que um clique apagava o byte do usuário para sempre |
+| **Status** | 🚧 **Na árvore na 3.85.0.** Ambiente de testes provado de ponta a ponta (bateria 39/39 + suíte completa 47/47 em 472 s + cliques reais na tela). **Falta:** commit, push, deploy e smoke em produção — tudo aguardando OK explícito do dono |
+| **Pedido** | Dono, 27/11: maquete da tela aprovada (*"igual à maquete"*) com a decisão de que **máquina não é pasta** ("enviar para máquina" continua ação do menu), e depois *"Pode colocar 30 dias mesmo!"* |
+| **Antes (medido)** | A tela listava os anexos numa lista plana: sem pasta, sem favorit, sem ordem por coluna e sem lixeira — o botão de apagar chamava o caminho que **removia a linha e o arquivo do disco na hora**. O seletor de conta do painel (`escopo.tenant`) era enviado pelo front em `/anexos` e `/documents`, mas **nenhuma rota da tela Arquivos o lia**, então o operador via os próprios arquivos achando que estava em outra conta |
+| **Como ficou** | (1) **`pastas_arquivos`** (tenant, nome, `pai_id`, `excluida_em`) criada por DDL idempotente no boot + `pasta_id`, `excluido_em` e `favorita` na ficha do anexo; teto de 500 pastas por conta, nome sem acento duplicado na mesma pasta = 409, nome inválido = 422. (2) **Rotas**: `GET/POST /pastas`, `PATCH/DELETE /pastas/:id` (+ `?definitivo=1`), `POST /pastas/:id/restaurar`, `GET /arquivos` com `?pasta=` / `?favoritos=1` / `?recentes=1` / `?lixeira=1` / `?q=`, `PATCH /arquivos/:id` (renomear, mover, favoritar — um PATCH para os três gestos), `POST /arquivos/excluir|restaurar|copiar`, `DELETE /arquivos/lixeira` (esvaziar), `GET /arquivos/usados`, `GET /arquivos/zip` (seleção virando `.zip` real) e `POST /arquivos/para-maquina`. (3) **Escopo de conta**: helper `escopo(u, req)` nas 15 rotas da tela — `tenantFor` decide, então usuário comum continua preso à própria conta e o operador mira com `?tenant=` (leitura) ou `tenant` no corpo (ação). (4) **Lixeira de 30 dias**: nada é apagado por pedido instantâneo; a faxina que já roda (`src/faxina.ts`) chama `expurgarLixeira(alvo, CONFIG.lixeiraDias)` e `NEXOS_LIXEIRA_DIAS` tem padrão **30**. Restaurar com a pasta morta cai na raiz **com aviso** (o arquivo não some por causa de pasta). (5) **Tela**: árvore de dois painéis, colunas ordenáveis (nome/tamanho/enviado/excluído), seleção com checkbox, menu de contexto por tipo (imagem, documento, pasta, lixeira), chips de "incompleto"/"na lixeira", barra de status com bytes da conta e da lixeira. Renomear **move o arquivo no disco junto** (mesmo id, mesmos bytes) — provado por hash |
+| **Prova feita (27/11, ambiente descartável `nexostest`)** | **Bateria `testes/env-local/anexos-bateria.mts`: 39 checagens, TUDO VERDE** em ambiente zerado — pastas (criar/duplicata/subpasta/renomear), teto de conversor (413) e teto do anexo na abertura do envio (422), upload em blocos com retomada, mover/favoritar/renomear com **hash invariante**, cópia com id novo e bytes iguais, lixeira (excluir → some da vista, aparece em `?lixeira=1`, conta em `/arquivos/usados`), restaurar (inclusive para a raiz com aviso), esvaziar apagando linha **e** disco, **expurgo só do que passou de 30 dias** (linha de 31 dias morre na faxina, a de 1 dia fica), zip com cabeçalho `PK`, isolamento entre duas contas (B não lista, não baixa, não renomeia o de A), mesmo nome de pasta em contas diferentes gerando ids diferentes, operador enxergando a conta pedida com `?tenant=` e **não** vendo a alheia sem filtro, nome malicioso (`../../`) limpo na entrada, envio abandonado marcado incompleto e **não copiável**, rejeições 401/404/422. **Suíte completa do repo: 47/47, fail 0, 472 s.** **Tela ao vivo com clique real** (Chromium, sessão do painel no ambiente de testes): criar pasta pelo menu, renomear pasta e arquivo pelo menu de contexto, excluir (sem `confirm()` nativo — vai direto para a lixeira, com aviso no rodapé), abrir a lixeira, restaurar — cada passo conferido no DOM **e** no banco (`pastas_arquivos`, `anexos_maquina`) e no disco (`/app/dados/anexos/teste/<id>/icone-prova.ico`). *Nota: a captura de tela do navegador falhou (timeout no IPC do daemon); a prova visual ficou em texto do DOM, não em imagem* |
+| **Falta** | OK do dono para: commit (lote do que está modificado), push, deploy no Dokploy e smoke em produção (versão em `/sistema`, rotas novas respondendo, `pastas_arquivos` criada pelo boot na produção, bundle novo servido) |
+| **Risco conhecido** | O boot cria as tabelas/colunas — produção vai ganhar `pastas_arquivos` e 3 colunas no anexo no primeiro start (sem migração manual). A faxina de 30 dias começa a apagar o que já estava na lixeira **a partir do deploy**; antes disso nada tinha data de lixeira |
+
 ## Ideias ainda não numeradas
 
 - **Suíte testar o caminho Windows**: hoje a suíte roda em Linux e nunca exercita o upload por
@@ -160,4 +175,4 @@ Este arquivo tem **só o que está em aberto** — as tarefas entregues foram re
   verificado (o Dokploy pode ter serviço de backup próprio). Em jogo, lido no banco de produção em
   19/11: **14 documentos / 265 chunks em 4 contas**, ~2.600 linhas em `comandos_log`, 4 máquinas
   pareadas e os arquivos originais no volume `nexos-jidbmc_nexos_arquivos`. **A VPS é hoje a única
-  cópia do que existe.** Quando o dono reabrir isto, o número T061 já foi usado, o T065 ficou com o acabamento do chat no celular e o T066 com a resposta vazia (ambos entregues na 3.82.0); usar **T067**.
+  cópia do que existe.** Quando o dono reabrir isto, o número T061 já foi usado, o T065 ficou com o acabamento do chat no celular e o T066 com a resposta vazia (ambos entregues na 3.82.0); **o T067 foi tomado pela tela Arquivos (3.85.0, na árvore) — reabrir backup com T068**.
