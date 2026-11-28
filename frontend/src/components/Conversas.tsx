@@ -126,6 +126,14 @@ export function Conversas({ tenant, operador, memoria, selecionada, recarga, onS
         <button className="conv-nova" onClick={onNova} title="começar uma conversa nova (nada é apagado)">
           <span aria-hidden="true">＋</span> nova conversa
         </button>
+        {/* v3.85.1 (dono, 27/11): o atalho do menu sai do rodapé. Ao lado da contagem ele
+             ia para um canto que ninguém procura — o dono olhou a gaveta e achou que o menu
+             não existia. Vem para a linha do topo, com palavra, entre "nova conversa" e o ✕. */}
+        {onAbrirMenu && (
+          <button className="conv-menu-app" onClick={onAbrirMenu} aria-label="abrir menu do app" title="menu do app">
+            ☰ menu
+          </button>
+        )}
         {onFechar && (
           <button className="conv-fechar" onClick={onFechar} aria-label="fechar lista de conversas">
             ✕
@@ -216,12 +224,7 @@ export function Conversas({ tenant, operador, memoria, selecionada, recarga, onS
         <span>
           {contagem.arquivadas > 0 ? `${contagem.ativas} ativas · ${contagem.arquivadas} arquivadas` : `${contagem.ativas} conversa${contagem.ativas === 1 ? "" : "s"}`}
         </span>
-        {/* v3.82: o topo do chat tem UM ☰ só; o menu do app vem daqui, de dentro da gaveta */}
-        {onAbrirMenu && (
-          <button className="conv-menu-app" onClick={onAbrirMenu} aria-label="abrir menu do app" title="menu do app">
-            ☰ menu
-          </button>
-        )}
+        {/* v3.85.1: o atalho do menu do app mudou para a linha do topo (conv-painel-topo) */}
       </div>
     </aside>
   );

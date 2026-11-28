@@ -1701,15 +1701,17 @@
   .conv-rodape {
     @apply border-t border-borda px-3 py-2 text-[10.5px] text-txt3;
   }
-  /* v3.82: o ☰ do topo abre a gaveta; o menu do app vem daqui (nome próprio — conv-menu
-     já era o dropdown ⋯ dos itens) */
+  /* v3.85.1 (dono, 27/11): o atalho do menu do app mora na LINHA DO TOPO da gaveta, ao lado
+     de "nova conversa" — no rodapé, colado na contagem, ele não era encontrado. Nome próprio:
+     conv-menu já era o dropdown ⋯ dos itens. */
   .conv-rodape {
     @apply flex items-center gap-2;
   }
   .conv-menu-app {
-    @apply ml-auto flex items-center gap-1 rounded-lg border border-borda bg-sup2 px-2 py-1
+    @apply flex flex-none items-center gap-1 rounded-lg border border-borda bg-sup2 px-2 py-1
       text-[11.5px] text-txt2 hover:border-bordaforte hover:bg-sup3 hover:text-txt;
     min-height: 32px;
+    white-space: nowrap;
   }
   /* a marca de compactação — tracejada, clicável */
   .marca-compactacao {
