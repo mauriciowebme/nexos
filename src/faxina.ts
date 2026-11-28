@@ -15,31 +15,58 @@
  * Nada aqui corre sozinho em request de leitura: só no loop periódico e no
  * POST /decay (que sempre foi "forçar agora").
  */
+import fsp from "node:fs/promises";
+import path from "node:path";
 import { CONFIG } from "./config";
 import { q, tx } from "./db";
 import { lerEsquecimento } from "./esquecimento";
 import { recarregarUsuarios } from "./usuarios";
+import { expurgarLixeira } from "./arquivos"; // v3.85: lixeira da tela Arquivos morre em 30 dias
 
 export type FaxinaResultado = {
   usuarios_apagados: string[];
   docs_expurgados: number;
   chunks_expurgados: number;
+  /* v3.85: o que a LIXEIRA da tela Arquivos perdeu (30 dias) */
+  lixeira_arquivos: number;
+  lixeira_pastas: number;
 };
 
 /** Expurgo físico do tenant inteiro. Tx única: ou sai tudo, não sai nada. */
 async function apagarTenant(nome: string): Promise<void> {
+  /* v3.85 (achei ao ligar a lixeira): a conta apagada deixava para TRÁS os arquivos que a
+     máquina dela mandou — a tabela `anexos_maquina` não estava nesta lista, então a ficha e os
+     bytes sobreviviam na pasta do volume depois de a conta morrer. Dados de uma conta que não
+     existe mais não podem ficar no disco de outra. `pastas_arquivos` idem. */
+  const fichas = await q<{ id: string; nome: string }>(
+    `SELECT id, nome FROM anexos_maquina WHERE tenant = $1`,
+    [nome],
+  ).catch(() => null);
   await tx(async (c) => {
     for (const tabela of [
       "chunks", "documents", "arquivos", "gavetas", "ingest_jobs",
       "chat_mensagens", "chat_tarefas",
       // v3.6: apagar o usuário leva as máquinas dele junto (pareamentos pendentes e rastro)
       "maquinas", "pareamentos", "comandos_log",
+      // v3.85: arquivos do explorador e as pastas da conta
+      "anexos_maquina", "pastas_arquivos",
     ]) {
+      /* só o que EXISTE nesta base: uma tabela de versão antiga ausente não pode abortar a
+         transação inteira (e abortar a tx deixaria a conta apagada com dados sobrando) */
+      const tem = await c.query(`SELECT to_regclass($1) AS r`, [tabela]);
+      if (!tem.rows[0]?.r) continue;
       await c.query(`DELETE FROM ${tabela} WHERE tenant = $1`, [nome]);
     }
     await c.query(`DELETE FROM provider_config WHERE escopo = $1`, [nome]);
     await c.query(`DELETE FROM usuarios WHERE nome = $1`, [nome]);
   });
+  /* o disco sai DEPOIS do commit: se a transação falhar nenhuma ficha existirá apontando para
+     um caminho apagado (o contrário deixaria arquivo órfão sem dono) */
+  const pastaDe = String(nome).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 64) || "_";
+  for (const a of fichas?.rows ?? []) {
+    await fsp.rm(path.join(CONFIG.arquivosDir, pastaDe, a.id), { recursive: true, force: true }).catch(() => undefined);
+  }
+  await fsp.rm(path.join(CONFIG.arquivosDir, pastaDe), { recursive: true, force: true }).catch(() => undefined);
 }
 
 /**
@@ -49,7 +76,7 @@ async function apagarTenant(nome: string): Promise<void> {
 export async function faxina(tenant?: string | null): Promise<FaxinaResultado> {
   const { efetivos } = await lerEsquecimento();
   const alvo = tenant !== null && tenant !== undefined ? tenant : null;
-  const resultado: FaxinaResultado = { usuarios_apagados: [], docs_expurgados: 0, chunks_expurgados: 0 };
+  const resultado: FaxinaResultado = { usuarios_apagados: [], docs_expurgados: 0, chunks_expurgados: 0, lixeira_arquivos: 0, lixeira_pastas: 0 };
 
   // 1) contas agendadas vencidas
   const venc = await q<{ nome: string }>(
@@ -105,6 +132,13 @@ export async function faxina(tenant?: string | null): Promise<FaxinaResultado> {
     );
   }
 
+  // 3) v3.85 — LIXEIRA da tela Arquivos: o que está lá há mais de NEXOS_LIXEIRA_DIAS (30) morre
+  //    de verdade (disco + ficha). Roda no MESMO loop: faxina de lixeira solta em script é exatamente
+  //    o que a regra da casa proíbe — a rotina tem que viver no sistema.
+  const lixo = await expurgarLixeira(alvo);
+  resultado.lixeira_arquivos = lixo.arquivos;
+  resultado.lixeira_pastas = lixo.pastas;
+
   void CONFIG; // (defaults já entram via lerEsquecimento; mantém o import útil se a política mudar)
   return resultado;
 }
@@ -117,10 +151,11 @@ export function iniciarFaxinaLoop(onUsuarioApagou: (nomes: string[]) => void): v
   timer = setInterval(async () => {
     try {
       const r = await faxina();
-      if (r.usuarios_apagados.length || r.docs_expurgados) {
+      if (r.usuarios_apagados.length || r.docs_expurgados || r.lixeira_arquivos || r.lixeira_pastas) {
         if (r.usuarios_apagados.length) onUsuarioApagou(r.usuarios_apagados);
         process.stdout.write(
-          `[nexos] faxina: ${r.usuarios_apagados.length} conta(s), ${r.docs_expurgados} doc(s) arquivado(s) apagado(s)\n`,
+          `[nexos] faxina: ${r.usuarios_apagados.length} conta(s), ${r.docs_expurgados} doc(s) arquivado(s) apagado(s)` +
+            `${r.lixeira_arquivos || r.lixeira_pastas ? `, lixeira: ${r.lixeira_arquivos} arquivo(s)/${r.lixeira_pastas} pasta(s)` : ""}\n`,
         );
       }
     } catch (e) {

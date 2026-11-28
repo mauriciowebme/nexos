@@ -133,6 +133,13 @@ export async function iniciarAnexos(): Promise<void> {
   /* tabela criada por uma versão anterior (a 3.45 em teste) não tem `completo` */
   await q(`ALTER TABLE ${TABELA} ADD COLUMN IF NOT EXISTS completo BOOLEAN NOT NULL DEFAULT FALSE`);
   await q(`ALTER TABLE ${TABELA} ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now()`);
+  /* v3.85: as colunas do EXPLORADOR (pasta, lixeira, estrela) são criadas AQUI também, antes
+     da faxina abaixo, porque a regra de retenção já consulta `excluido_em`. O boot chamava
+     `iniciarAnexos()` antes de `iniciarArquivos()` e a primeira rodada morreria em column does
+     not exist. Idempotente dos dois lados — quem chegar primeiro cria. */
+  await q(`ALTER TABLE ${TABELA} ADD COLUMN IF NOT EXISTS pasta_id BIGINT`);
+  await q(`ALTER TABLE ${TABELA} ADD COLUMN IF NOT EXISTS excluido_em TIMESTAMPTZ`);
+  await q(`ALTER TABLE ${TABELA} ADD COLUMN IF NOT EXISTS favorita BOOLEAN NOT NULL DEFAULT FALSE`);
 
   /* anexos antigos (bytea) migram uma vez para o disco — a tabela velha fica como
      registro até o expurgo, mas ninguém mais escreve nela */
@@ -146,8 +153,16 @@ export async function iniciarAnexos(): Promise<void> {
   }
   if ((velhos?.rows.length ?? 0) > 0) await q(`DELETE FROM anexos`).catch(() => undefined);
 
-  /* faxina: arquivo completo some depois dos dias configurados; pedaço órfão em 7 dias */
-  await q(`DELETE FROM ${TABELA} WHERE completo AND criado_em < now() - ($1 || ' days')::interval`, [String(CONFIG.arquivosDias)]);
+  /* faxina: arquivo completo some depois dos dias configurados; pedaço órfão em 7 dias.
+     v3.85: o relógio é o último contato (`GREATEST(criado_em, atualizado_em)`) para o
+     arquivo que a pessoa RESTAURou da lixeira não morrer no minuto seguinte; e item NA
+     LIXEIRA não obedece a esta regra — quem manda nele é `expurgarLixeira` (30 dias). */
+  await q(
+    `DELETE FROM ${TABELA}
+      WHERE completo AND excluido_em IS NULL
+        AND GREATEST(criado_em, atualizado_em) < now() - ($1 || ' days')::interval`,
+    [String(CONFIG.arquivosDias)],
+  );
   await q(`DELETE FROM ${TABELA} WHERE NOT completo AND atualizado_em < now() - interval '7 days'`);
 }
 
@@ -360,6 +375,84 @@ export async function lerAnexo(id: string, u: Usuario): Promise<{ nome: string; 
   return { nome: a.nome, mime: a.mime, dados: await fsp.readFile(a.caminho) };
 }
 
+/** v3.85 — RENAME do arquivo na tela Arquivos.
+ *
+ * O nome é parte do caminho no disco (`<raiz>/<tenant>/<id>/<nome>`), então renomear tem que
+ * mexer no disco E na ficha. Ordem importa: renomeia o disco, grava a ficha, e se a ficha
+ * falhar VOLTA o disco para o nome antigo — ficha apontando para caminho que não existe é
+ * o anexo morto sem ninguém saber. */
+export async function trocarNomeArquivo(id: string, tenant: string, novoNome: string): Promise<string> {
+  const limpo = nomeLimpo(novoNome).slice(0, 255);
+  const r = await q<{ nome: string }>(`SELECT nome FROM ${TABELA} WHERE id = $1 AND tenant = $2`, [id, tenant]);
+  const antigo = r.rows[0]?.nome;
+  if (!antigo) throw new HttpError(404, "anexo não encontrado");
+  if (antigo === limpo) return limpo;
+  const pasta = path.dirname(caminhoDoArquivo(tenant, id, antigo));
+  const de = path.join(pasta, antigo);
+  const para = path.join(pasta, limpo);
+  if (!fs.existsSync(de)) throw new HttpError(404, "o arquivo não está mais no disco");
+  if (fs.existsSync(para)) throw new HttpError(409, `já existe um arquivo chamado "${limpo}" aqui`);
+  await fsp.rename(de, para);
+  try {
+    await q(`UPDATE ${TABELA} SET nome = $1, atualizado_em = now() WHERE id = $2 AND tenant = $3`, [limpo, id, tenant]);
+  } catch (e) {
+    await fsp.rename(para, de).catch(() => undefined);
+    throw e;
+  }
+  return limpo;
+}
+
+/** v3.85 — COPIAR do explorador (o "Copiar" do menu de contexto).
+ *
+ * Cria uma ficha NOVA com bytes novos (id novo, mesmo conteúdo) por `copyFile` — sem ler o
+ * arquivo inteiro em memória, porque aqui mora vídeo de 10 GB. O nome da cópia ganha " - cópia"
+ * quando o destino já tem aquele nome, senão a cópia sumiria por cima do original. */
+export async function copiarAnexo(
+  id: string,
+  u: Usuario,
+  opts: { nome?: string; host?: string } = {},
+): Promise<{ id: string; nome: string; bytes: number }> {
+  const r = await q<{ tenant: string; nome: string; mime: string; bytes: string; host: string; completo: boolean }>(
+    `SELECT tenant, nome, mime, bytes, host, completo FROM ${TABELA} WHERE id = $1`,
+    [id],
+  );
+  const a = r.rows[0];
+  if (!a) throw new HttpError(404, "arquivo não encontrado");
+  /* v3.85: sem porta do operador — a cópia nasce na conta de quem pede, então só o dono mexe */
+  if (a.tenant !== u.tenant) throw new HttpError(404, "arquivo não encontrado");
+  if (!a.completo) throw new HttpError(422, "o arquivo ainda está incompleto no servidor — espere o envio terminar");
+  const origem = caminhoDoArquivo(a.tenant, id, a.nome);
+  if (!fs.existsSync(origem)) throw new HttpError(404, "o arquivo não está mais no disco");
+
+  const pedido = nomeLimpo(opts.nome ?? a.nome);
+  const base = pedido.replace(/\.[^.]+$/, "");
+  const ext = pedido.match(/\.[^.]+$/)?.[0] ?? "";
+  const novoId = randomBytes(12).toString("hex");
+  let nome = pedido;
+  /* "cópia" só quando o nome pedido já está ocupado na conta (a pasta de destino é checada depois) */
+  const ocupado = await q<{ id: string }>(
+    `SELECT id FROM ${TABELA} WHERE tenant = $1 AND nome = $2 AND excluido_em IS NULL AND id <> $3`,
+    [a.tenant, nome, id],
+  );
+  if (ocupado.rowCount) nome = `${base} - cópia${ext}`.slice(0, 255);
+  const destino = caminhoDoArquivo(a.tenant, novoId, nome);
+  await fsp.mkdir(path.dirname(destino), { recursive: true });
+  await fsp.copyFile(origem, destino);
+  const bytes = (await fsp.stat(destino).catch(() => null))?.size ?? Number(a.bytes);
+  try {
+    await q(
+      `INSERT INTO ${TABELA} (id, tenant, host, nome, mime, bytes, bytes_esperados, completo)
+       VALUES ($1,$2,$3,$4,$5,$6,$6,TRUE)`,
+      [novoId, a.tenant, String(opts.host ?? a.host ?? "web").slice(0, 128), nome, a.mime, bytes],
+    );
+  } catch (e) {
+    /* a ficha não nasceu: o byte copiado não pode ficar no disco sem dono */
+    await fsp.rm(path.dirname(destino), { recursive: true, force: true }).catch(() => undefined);
+    throw e;
+  }
+  return { id: novoId, nome, bytes };
+}
+
 /** apaga do disco e do banco (faxina de usuário / teste) */
 export async function apagarAnexo(id: string): Promise<void> {
   const r = await q<{ tenant: string; nome: string }>(`SELECT tenant, nome FROM ${TABELA} WHERE id = $1`, [id]);
@@ -389,7 +482,7 @@ export async function listarAnexos(
   const busca = String(opts.q ?? "").trim().slice(0, 120);
   const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
   const offset = Math.max(Number(opts.offset) || 0, 0);
-  const filtro = `($1::text IS NULL OR tenant = $1) AND ($2::text = '' OR nome ILIKE '%' || $2 || '%')`;
+  const filtro = `($1::text IS NULL OR tenant = $1) AND excluido_em IS NULL AND ($2::text = '' OR nome ILIKE '%' || $2 || '%')`;
   const r = await q<AnexoFicha>(
     `SELECT id, nome, mime, bytes, host, completo, criado_em
        FROM ${TABELA} WHERE ${filtro}

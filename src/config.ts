@@ -31,7 +31,7 @@ function bool(name: string, def: boolean): boolean {
 }
 
 export const CONFIG = {
-  versao: "3.84.1",
+  versao: "3.85.0",
   model: process.env.NEXOS_MODEL ?? "nomic-ai/nomic-embed-text-v1.5",
   modelDir: process.env.NEXOS_MODEL_DIR ?? "/app/models",
 
@@ -53,6 +53,10 @@ export const CONFIG = {
   arquivosDir: process.env.NEXOS_ARQUIVOS_DIR ?? "/app/dados/anexos",
   maxArquivoBytes: int("NEXOS_MAX_ARQUIVO_MB", 10_240) * 1024 * 1024,
   arquivosDias: int("NEXOS_ARQUIVOS_DIAS", 7),
+  /* v3.85 (dono, 27/11): a LIXEIRA da tela Arquivos segura 30 dias. Confirmado pelo dono
+     depois da maquete ("pode colocar 30 dias mesmo"). Item na lixeira NÃO obedece mais a
+     `arquivosDias` — o relógio dele passa a ser a data em que foi apagado. */
+  lixeiraDias: int("NEXOS_LIXEIRA_DIAS", 30),
 
   maxContentChars: int("NEXOS_MAX_CONTENT_CHARS", 500_000),
   maxQueryChars: int("NEXOS_MAX_QUERY_CHARS", 2_000),

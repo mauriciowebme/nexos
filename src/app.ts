@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { CONFIG, tenantFor } from "./config";
+import { CONFIG, tenantFor, type Usuario } from "./config";
 import {
   alvoMaquina,
   apagarMaquina,
@@ -17,9 +17,25 @@ import {
   mudarMaquina,
   rodar,
 } from "./maquinas";
-import { consumirUpload, consumirUploadDeArquivo } from "./maquinas_tools";
+import { consumirUpload, consumirUploadDeArquivo, toolMaquina } from "./maquinas_tools";
 import { abrirAnexo, abrirEnvio, apagarAnexoDe, conferirChave, estadoDoEnvio, gravarBloco, listarAnexos } from "./anexos";
-import { HttpError, iso , erro422 } from "./errors";
+import {
+  arquivosParaZip,
+  copiarParaPasta,
+  criarPasta,
+  editarArquivo,
+  editarPasta,
+  esvaziarLixeira,
+  excluirArquivos,
+  excluirPasta,
+  listarArquivos,
+  listarPastas,
+  restaurarArquivos,
+  restaurarPasta,
+  usadosConta,
+} from "./arquivos";
+import { ZipFile } from "yazl";
+import { HttpError, iso , erro422, erro404 } from "./errors";
 import { authenticate, ipCliente } from "./auth";
 import { embedderDim, embedderDisponivel } from "./embed";
 import { detectarOcr, ocrDisponivel } from "./ocr";
@@ -866,12 +882,152 @@ export function criarApp(): FastifyInstance {
       .send(fs.createReadStream(a.caminho, { start: ini, end: fim }));
   });
 
+  /* ------------------------------------------------- v3.85: explorador da conta
+     Pastas de verdade e lixeira de 30 dias na tela Arquivos (maquete aprovada pelo dono em
+     27/11: máquina NÃO é pasta — "enviar para máquina" continua sendo ação do menu). */
+
+
+/** v3.85: o seletor de conta do painel vale também na tela Arquivos. Usuário comum fica
+ * no próprio tenant (quem decide é `tenantFor`); operador mira com ?tenant= (leituras) ou
+ * `tenant` no corpo (ações). Sem isto a tela mostrava os arquivos do operador enquanto o
+ * resto do painel já estava em outra conta — o pior tipo de engano. */
+function escopo(u: Usuario, req: { query?: unknown; body?: unknown }): Usuario {
+  const q = (req.query ?? {}) as Record<string, unknown>;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const pedido = typeof q.tenant === "string" ? q.tenant : typeof b.tenant === "string" ? String(b.tenant) : "";
+  const t = tenantFor(u, pedido);
+  return t === u.tenant ? u : { ...u, tenant: t };
+}
+
+  app.get("/pastas", async (req) => {
+    const u = escopo(usuario(req), req);
+    const s = req.query as Record<string, string>;
+    return { pastas: await listarPastas(u, { lixeira: s.lixeira === "1" }) };
+  });
+
+  app.post("/pastas", async (req, reply) => {
+    const u = escopo(usuario(req), req);
+    return reply.status(201).send(await criarPasta(u, corpo(req)));
+  });
+
+  /** renomear e/ou mover pasta: um PATCH cobre os dois gestos da tela */
+  app.patch("/pastas/:id", async (req) => {
+    const u = escopo(usuario(req), req);
+    const p = req.params as Record<string, string>;
+    return await editarPasta(u, Number(p.id), corpo(req));
+  });
+
+  app.delete("/pastas/:id", async (req, reply) => {
+    const u = escopo(usuario(req), req);
+    const p = req.params as Record<string, string>;
+    const s = req.query as Record<string, string>;
+    return reply.send(await excluirPasta(u, Number(p.id), s.definitivo === "1"));
+  });
+
+  app.post("/pastas/:id/restaurar", async (req) => {
+    const u = escopo(usuario(req), req);
+    const p = req.params as Record<string, string>;
+    return await restaurarPasta(u, Number(p.id));
+  });
+
+  /** a lista de uma pasta (?pasta=) ou uma vista da barra lateral: ?favoritos=1 ?recentes=1 ?lixeira=1 */
+  app.get("/arquivos", async (req) => {
+    const u = escopo(usuario(req), req);
+    const s = req.query as Record<string, string>;
+    return listarArquivos(u, {
+      pasta: s.pasta,
+      q: s.q ?? "",
+      lixeira: s.lixeira === "1",
+      favoritos: s.favoritos === "1",
+      recentes: s.recentes === "1",
+      limit: s.limit ? Number(s.limit) : 200,
+      offset: s.offset ? Number(s.offset) : 0,
+    });
+  });
+
+  /** renomear, mover de pasta ou favoritar (o clique duplo e a estrela da tela) */
+  app.patch("/arquivos/:id", async (req) => {
+    const u = escopo(usuario(req), req);
+    const p = req.params as Record<string, string>;
+    return editarArquivo(u, p.id, corpo(req));
+  });
+
+  /** excluir em lote → LIXEIRA. `definitivo: true` apaga do disco (o botão vermelho da tela) */
+  app.post("/arquivos/excluir", async (req) => {
+    const u = escopo(usuario(req), req);
+    const b = corpo(req);
+    return excluirArquivos(u, b.ids, b.definitivo === true);
+  });
+
+  /** "Copiar para…" — duplica o arquivo (bytes novos) para outra pasta */
+  app.post("/arquivos/copiar", async (req) => {
+    const u = escopo(usuario(req), req);
+    const b = corpo(req) as Record<string, unknown>;
+    return copiarParaPasta(u, b.ids, b.pasta);
+  });
+
+  app.post("/arquivos/restaurar", async (req) => {
+    const u = escopo(usuario(req), req);
+    const b = corpo(req) as Record<string, unknown>;
+    return restaurarArquivos(u, b.ids);
+  });
+
+  /** esvaziar a lixeira (só da conta que pediu) */
+  app.delete("/arquivos/lixeira", async (req) => {
+    const u = escopo(usuario(req), req);
+    return esvaziarLixeira(u);
+  });
+
+  /** barra de status da tela: "x itens · y GB usados nesta conta" */
+  app.get("/arquivos/usados", async (req) => {
+    const u = escopo(usuario(req), req);
+    return usadosConta(u);
+  });
+
+  /** baixar a seleção como .zip (o botão "Baixar" com vários marcados) */
+  app.get("/arquivos/zip", async (req, reply) => {
+    const u = escopo(usuario(req), req);
+    const s = req.query as Record<string, string>;
+    const ids = String(s.ids ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+    const lista = await arquivosParaZip(u, ids);
+    let soma = 0;
+    for (const a of lista) soma += fs.existsSync(a.caminho) ? fs.statSync(a.caminho).size : 0;
+    if (soma > 2 * 1024 * 1024 * 1024) throw erro422("seleção grande demais para um zip de uma vez (2 GB) — baixe em partes");
+    const zip = new ZipFile();
+    const vistos = new Set<string>();
+    for (const a of lista) {
+      if (!fs.existsSync(a.caminho)) continue;
+      let nome = a.nome;
+      let i = 2;
+      while (vistos.has(nome)) nome = `${path.parse(a.nome).name}_${i}${path.parse(a.nome).ext}`;
+      vistos.add(nome);
+      zip.addFile(a.caminho, nome);
+    }
+    if (!vistos.size) throw erro404("nenhum desses arquivos está no disco");
+    zip.end();
+    return reply
+      .header("content-type", "application/zip")
+      .header("content-disposition", `attachment; filename="arquivos.zip"`)
+      .send(zip.outputStream);
+  });
+
+  /** "Enviar para máquina…" do menu de contexto — reaproveita a tool já provada do chat.
+   *  Máquina não é pasta (decisão do dono na maquete): é para ONDE o arquivo vai, não ONDE mora. */
+  app.post("/arquivos/para-maquina", async (req) => {
+    const u = escopo(usuario(req), req);
+    const b = corpo(req) as Record<string, unknown>;
+    const anexo = String(b.anexo_id ?? b.id ?? "").trim().slice(0, 64);
+    const host = String(b.host ?? "").trim().slice(0, 128);
+    if (!anexo || !host) throw erro422("anexo_id e host são obrigatórios");
+    return toolMaquina(u, "enviar_para_maquina", { anexo_id: anexo, host, destino: b.destino }, "painel");
+  });
+
   /* ------------------------------------------------------------- painel */
 
   /** Números do acervo em uma chamada (o Painel não faz 6 requisições). */
   /* v3.4: Painel é do admin. O usuário comum não tem o módulo na tela nem pela API. */
   app.get("/dashboard", async (req) => {
-    const u = usuario(req);
+    const u = escopo(usuario(req), req);
     exigirOperador(u);
     const s = req.query as Record<string, string>;
     return dadosPainel(u, s.tenant ?? "");
