@@ -4,30 +4,10 @@ import { fmtData, slug } from "../lib/fmt";
 import { useToast } from "./Toast";
 import { Buscar } from "./Buscar";
 import { Jobs } from "./Jobs";
-import type { AnexoFicha, AnexosResp, DocItem, DocsResp, Escopo, Job, JobsResp } from "../types";
+import { Explorador } from "./Explorador";
+import type { DocItem, DocsResp, Escopo, Job, JobsResp } from "../types";
 
 type Aba = "rag" | "meus";
-
-/* v3.49 — o tipo do arquivo vira um quadradinho colorido na linha, do mesmo jeito
-   que o desenho aprovado: a pessoa reconhece o tipo antes de ler o nome. */
-function tipoDoAnexo(mime: string): { rotulo: string; cor: string; d: string } {
-  const m = (mime || "").toLowerCase();
-  if (m.includes("pdf"))
-    return { rotulo: "PDF", cor: "#f85149", d: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5zM14 3v5h5" };
-  if (m.startsWith("image/"))
-    return {
-      rotulo: "Imagem",
-      cor: "#6cb6ff",
-      d: "M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5zM8.5 9.5a1.7 1.7 0 1 0 0-3.4 1.7 1.7 0 0 0 0 3.4zM4 17l5-4 4 3 3-2 4 3",
-    };
-  if (m.includes("sheet") || m.includes("excel") || m.includes("csv"))
-    return { rotulo: "Planilha", cor: "#3fb950", d: "M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5zM3 10h18M9 3v18M15 3v18" };
-  if (m.startsWith("audio/") || m.includes("video/"))
-    return { rotulo: "Áudio", cor: "#a371f7", d: "M9 18V6l10-2v12M6.5 20.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM16.5 18.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z" };
-  if (m.includes("xml") || m.includes("json"))
-    return { rotulo: "XML", cor: "#d29922", d: "M8 7l-4 5 4 5M16 7l4 5-4 5" };
-  return { rotulo: "Arquivo", cor: "#7d8899", d: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z" };
-}
 
 export function Arquivos({
   escopo,
@@ -63,9 +43,6 @@ export function Arquivos({
      pasta física do usuário (os anexos que passaram pelo chat/máquinas). */
   const [aba, setAba] = useState<Aba>("meus");
   const [jobsPorDoc, setJobsPorDoc] = useState<Record<string, Job>>({});
-  const [anexos, setAnexos] = useState<AnexoFicha[]>([]);
-  const [filtroAnexos, setFiltroAnexos] = useState("");
-  const [carregandoAnexos, setCarregandoAnexos] = useState(false);
 
   const carregar = useCallback(
     async (q: string, arquivados: boolean) => {
@@ -119,27 +96,8 @@ export function Arquivos({
     }
   }, [escopo.tenant, operador]);
 
-  const carregarAnexos = useCallback(
-    async (q: string) => {
-      setCarregandoAnexos(true);
-      try {
-        const r = await get<AnexosResp>(
-          "/anexos?" + qs({ q, limit: 200, tenant: operador ? escopo.tenant : undefined }),
-        );
-        setAnexos(r.anexos);
-      } catch (e) {
-        setAnexos([]);
-        toast("meus arquivos: " + (e as Error).message, "erro");
-      } finally {
-        setCarregandoAnexos(false);
-      }
-    },
-    [escopo.tenant, operador, toast],
-  );
-
   useEffect(() => {
     if (aba === "rag") void carregarJobs();
-    else void carregarAnexos("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aba, escopo.tenant, escopo.memoria]);
 
@@ -310,31 +268,6 @@ export function Arquivos({
     }
   }
 
-  async function baixarAnexo(a: AnexoFicha) {
-    try {
-      await baixar(`/anexos/${encodeURIComponent(a.id)}`, a.nome || "arquivo");
-    } catch (e) {
-      toast((e as Error).message, "erro", 6000);
-    }
-  }
-
-  async function apagarAnexo(a: AnexoFicha) {
-    if (!confirm(`APAGAR "${a.nome}" da pasta (${tamanhoLegivel(a.bytes)})? Isso não tem como desfazer.`)) return;
-    try {
-      await del(`/anexos/${encodeURIComponent(a.id)}`);
-      toast("arquivo apagado ✓", "sucesso");
-      void carregarAnexos(filtroAnexos);
-    } catch (e) {
-      toast((e as Error).message, "erro");
-    }
-  }
-
-  function aoFiltrarAnexos(v: string) {
-    setFiltroAnexos(v);
-    window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => void carregarAnexos(v.trim()), 350);
-  }
-
   return (
     <section>
       {/* v3.49 — cabeçalho próprio da tela: título, resumo e o seletor de visão.
@@ -343,7 +276,7 @@ export function Arquivos({
         <h1>Arquivos</h1>
         <div id="arqOnde" className="mt-1 text-[12.8px] text-txt3">
           {escopo.tenant
-            ? `${anexos.length} na sua pasta${docs.length ? ` · ${docs.length} na base de conhecimento` : ""}`
+            ? `sua pasta de arquivos — pastas, favoritos e lixeira de 30 dias${docs.length ? ` · ${docs.length} na base de conhecimento` : ""}`
             : "sua pasta de arquivos"}
         </div>
       </div>
@@ -358,8 +291,7 @@ export function Arquivos({
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.2a2 2 0 0 1 1.6.8l.9 1.2h7.3A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9z" />
           </svg>
-          Meus arquivos
-          <span className="seg-n">{anexos.length}</span>
+
         </button>
         <button
           id="abaRag"
@@ -700,111 +632,9 @@ export function Arquivos({
         </>
       )}
 
-      {aba === "meus" && (
-        <>
-          <div className="faixa">
-            <input
-              id="meusFiltro"
-              className="campo min-w-[200px] flex-1"
-              placeholder="filtrar por nome do arquivo…"
-              aria-label="filtrar meus arquivos"
-              value={filtroAnexos}
-              onChange={(e) => aoFiltrarAnexos(e.target.value)}
-            />
-            <span id="meusTotal" className="sub2">
-              {carregandoAnexos ? "" : `${anexos.length} arquivo(s)`}
-            </span>
-          </div>
+      {/* v3.85 — a lista plana virou EXPLORADOR (pastas + lixeira), maquete aprovada pelo dono */}
+      {aba === "meus" && <Explorador escopo={escopo} />}
 
-          <p className="mb-3 text-[12px] text-txt3">
-            A pasta física deste usuário: o que chegou pelo chat e pelas máquinas. Fica guardada pelo prazo da
-            faxina (7 dias por padrão) e não entra no RAG.
-          </p>
-
-          <table className="tabela" id="meusTabela">
-            <thead>
-              <tr>
-                <th>arquivo</th>
-                <th>origem</th>
-                <th className="num">tamanho</th>
-                <th>enviado</th>
-                <th aria-label="ações"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {carregandoAnexos && (
-                <tr>
-                  <td colSpan={5} className="text-txt3">
-                    carregando…
-                  </td>
-                </tr>
-              )}
-              {!carregandoAnexos && anexos.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="text-txt3">
-                    {filtroAnexos.trim()
-                      ? "nenhum arquivo com esse filtro"
-                      : "nenhum arquivo ainda — o que você anexar no chat aparece aqui"}
-                  </td>
-                </tr>
-              )}
-              {!carregandoAnexos &&
-                anexos.map((a) => (
-                  <tr key={a.id}>
-                    <td>
-                      <div className="flex items-center gap-3">
-                        <span
-                          className="grid h-[31px] w-[31px] flex-none place-items-center rounded-[9px]"
-                          style={{ background: tipoDoAnexo(a.mime).cor + "1f", color: tipoDoAnexo(a.mime).cor }}
-                          aria-hidden="true"
-                        >
-                          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                            <path d={tipoDoAnexo(a.mime).d} />
-                          </svg>
-                        </span>
-                        <div className="min-w-0">
-                          <div className="truncate font-medium text-txt">{a.nome}</div>
-                          <div className="mt-0.5 text-[11px] text-txt3">
-                            {tipoDoAnexo(a.mime).rotulo} · {a.completo ? "completo" : "incompleto"}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td>
-                      <span className="tcode">{a.host || "—"}</span>
-                    </td>
-                    <td className="num">{tamanhoLegivel(a.bytes)}</td>
-                    <td>{fmtData(a.criado_em)}</td>
-                    <td className="acoes">
-                      <span className="acoes-linha">
-                        <button
-                          className="btn-icone"
-                          title="baixar o arquivo"
-                          aria-label="baixar arquivo"
-                          onClick={() => void baixarAnexo(a)}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M12 4v12M7 11l5 5 5-5M4 18v1.5A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5V18" />
-                          </svg>
-                        </button>
-                        <button
-                          className="btn-icone btn-icone-perigo"
-                          title="apagar da pasta (não tem como desfazer)"
-                          aria-label="apagar arquivo"
-                          onClick={() => void apagarAnexo(a)}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" />
-                          </svg>
-                        </button>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </>
-      )}
     </section>
   );
 }

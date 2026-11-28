@@ -1726,3 +1726,181 @@
     }
   }
 }
+
+/* =========================================================== v3.85 explorador
+   A aba "Meus arquivos" virou explorador de verdade (maquete aprovada pelo dono em 27/11):
+   árvore de pastas à esquerda (sem máquina dentro), tabela com colunas ordenáveis, menu de
+   contexto, barra de status e a vista Lixeira. */
+@layer components {
+  .explorador {
+    @apply grid gap-0 overflow-hidden rounded-cartao border border-bordaforte bg-sup;
+    grid-template-columns: 232px minmax(0, 1fr);
+    min-height: 480px;
+  }
+  .explorador .col-lado {
+    @apply overflow-y-auto border-r border-borda bg-sup2/60 px-2 py-3;
+    max-height: 70vh;
+  }
+  .explorador .grupo {
+    @apply flex items-center justify-between px-2 pb-1 pt-3 text-[10.5px] font-semibold uppercase tracking-wider text-txt3;
+  }
+  .explorador .grupo.com-acao {
+    @apply pt-3;
+  }
+  .explorador .no {
+    @apply flex w-full items-center gap-1.5 rounded-campo px-2 py-[5px] text-left text-[12.8px] text-txt2 hover:bg-sup3 hover:text-txt;
+    background: transparent;
+    border: 0;
+    font: inherit;
+    cursor: pointer;
+  }
+  .explorador .no.on {
+    @apply bg-sup3 text-txt;
+    box-shadow: inset 2px 0 0 #6cb6ff;
+  }
+  .explorador .no .chev {
+    @apply inline-block w-3 flex-none cursor-pointer text-center text-[10px] text-txt3;
+  }
+  .explorador .no .ic {
+    @apply w-4 flex-none text-center text-[12px];
+  }
+  .explorador .no .nm {
+    @apply min-w-0 flex-1 truncate;
+  }
+  .explorador .no .qt {
+    @apply flex-none text-[11px] text-txt3;
+  }
+  .explorador .dica-arvore {
+    @apply px-2 py-2 text-[11.5px] text-txt3;
+  }
+  .explorador .col-main {
+    @apply flex min-w-0 flex-col;
+  }
+  .explorador .toolbar {
+    @apply flex flex-wrap items-center gap-2 border-b border-borda px-3 py-2.5;
+  }
+  .explorador .toolbar .sep {
+    @apply mx-1 h-5 w-px flex-none bg-borda;
+  }
+  .explorador .subindo {
+    @apply ml-auto max-w-[220px] truncate text-[11.5px] text-azul;
+  }
+  .explorador .migalhas {
+    @apply flex flex-wrap items-center gap-1 border-b border-borda px-3 py-2 text-[12.5px];
+  }
+  .explorador .migalhas .lig {
+    @apply cursor-pointer rounded-[6px] px-1.5 py-0.5 text-txt2 hover:bg-sup3 hover:text-txt;
+    background: transparent;
+    font: inherit;
+    border: 0;
+  }
+  .explorador .migalhas .lig.atual {
+    @apply font-semibold text-txt;
+  }
+  .explorador .tra {
+    @apply px-0.5 text-txt3;
+  }
+  .explorador .espaço {
+    @apply flex-1;
+  }
+  .explorador .campo.busca {
+    @apply w-[210px] py-1 text-[12.5px];
+  }
+  .explorador .lista {
+    @apply m-0 w-full border-collapse text-[13px];
+  }
+  .explorador .lista th.ord {
+    @apply cursor-pointer select-none hover:text-txt;
+  }
+  .explorador .lista td.chk,
+  .explorador .lista th.chk {
+    @apply w-8 text-center;
+  }
+  .explorador .linha {
+    @apply cursor-default border-b border-borda/60 hover:bg-sup2;
+  }
+  .explorador .linha.sel {
+    @apply bg-sup3;
+  }
+  .explorador .nomelim {
+    @apply flex items-center gap-2;
+  }
+  .explorador .nomelim .ico {
+    @apply grid h-[27px] w-[27px] flex-none place-items-center rounded-[8px];
+  }
+  .explorador .nomelim .nm-arq {
+    @apply min-w-0 truncate font-medium text-txt;
+    max-width: 320px;
+  }
+  .explorador .nomelim .estrela {
+    @apply flex-none cursor-pointer p-0 text-[14px] leading-none text-txt3 hover:text-amarelo;
+    background: transparent;
+    border: 0;
+  }
+  .explorador .nomelim .estrela.on {
+    @apply text-amarelo;
+  }
+  .explorador .sub-nome {
+    @apply pl-[35px] pt-0.5 text-[11px] text-txt3;
+  }
+  .explorador .data {
+    @apply whitespace-nowrap text-[12.5px] text-txt2;
+  }
+  .explorador .statusbar {
+    @apply flex flex-wrap items-center gap-1.5 border-t border-borda px-3 py-2 text-[11.8px] text-txt2;
+    @apply mt-auto;
+  }
+  .explorador .menu-contexto {
+    @apply fixed z-50 w-[236px] overflow-hidden rounded-campo border border-bordaforte bg-sup py-1 shadow-painel;
+  }
+  .explorador .menu-contexto button {
+    @apply block w-full px-3 py-1.5 text-left text-[12.8px] text-txt2 hover:bg-sup3 hover:text-txt;
+    background: transparent;
+    border: 0;
+    font: inherit;
+  }
+  .explorador .menu-contexto button.perigo {
+    @apply text-vermelho hover:bg-vermelho/10;
+  }
+  .explorador .menu-contexto button:disabled {
+    @apply cursor-not-allowed opacity-40;
+  }
+  .explorador .menu-contexto hr {
+    @apply my-1 border-borda;
+  }
+  .explorador .menu-contexto .atalho {
+    @apply float-right text-[11px] text-txt3;
+  }
+  .explorador .menu-contexto .dica-menu {
+    @apply border-t border-borda px-3 pb-1 pt-1.5 text-[11px] text-txt3;
+  }
+  .explorador .rodape-modal {
+    @apply flex justify-end gap-2 border-t border-borda px-4 py-3;
+  }
+  .explorador .modal .no {
+    @apply w-full;
+  }
+  .explorador .props {
+    @apply grid grid-cols-[92px_minmax(0,1fr)] gap-x-3 gap-y-2 px-4 py-3 text-[12.8px];
+  }
+  .explorador .props dt {
+    @apply text-txt3;
+  }
+  .explorador .props dd {
+    @apply min-w-0 break-words text-txt;
+  }
+  .explorador .props dd.mono {
+    @apply font-mono text-[11.5px] text-txt2;
+  }
+  @media (max-width: 900px) {
+    .explorador {
+      grid-template-columns: 1fr;
+    }
+    .explorador .col-lado {
+      @apply max-h-[210px] border-b border-r-0;
+    }
+    .explorador .nomelim .nm-arq {
+      max-width: 150px;
+    }
+  }
+}
