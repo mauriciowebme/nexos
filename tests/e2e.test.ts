@@ -5569,6 +5569,193 @@ await bloco(t, "v3.6: máquinas por usuário — hub WS, pareamento, run, escopo
     f.fechar("habilidades-3.84");
   });
 
+
+  await bloco(t, "explorador da conta: pastas e lixeira (v3.85)", async () => {
+    const f = fiscal();
+    const CONTAINER = process.env.CONTAINER ?? "";
+    const sh = (cmd: string) => execFileSync("docker", ["exec", CONTAINER, "sh", "-c", cmd], { encoding: "utf8" });
+    const psql = (sql: string) =>
+      execFileSync("docker", ["exec", process.env.DBCONTAINER ?? CONTAINER.replace("-nexos-1", "-nexos-db-1"), "sh", "-c",
+        `psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -tAc \"${sql}\"`], { encoding: "utf8" }).trim();
+
+    /* sobe um arquivo pequeno pelo canal normal (o mesmo do navegador) e devolve o id */
+    async function subir(nome: string, bytes: Buffer): Promise<string> {
+      const id = `exp${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`.replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+      const r = await fetch(`${BASE}/anexos/enviar?${new URLSearchParams({ id, offset: "0", total: String(bytes.length), nome, mime: "text/plain" })}`, {
+        method: "POST",
+        headers: { Authorization: "B" + "earer " + TESTKEY, "content-type": "application/octet-stream" },
+        body: new Uint8Array(bytes),
+        signal: AbortSignal.timeout(60000),
+      });
+      f.check(`v3.85 subida de "${nome}" aceita`, r.status === 201, r.status);
+      return id;
+    }
+
+    const sufixo = String(Date.now()).slice(-6);
+    const nomePai = `e2e-pai-${sufixo}`;
+    const nomeFilha = `e2e-filha-${sufixo}`;
+
+    /* 1) criar pasta */
+    let r = await call("POST", "/pastas", { key: TESTKEY, corpo: { nome: nomePai, pai_id: 0 } });
+    f.check("v3.85 POST /pastas cria e devolve id", r.status === 201 && Number(r.json?.id) > 0, `${r.status} ${r.texto.slice(0, 140)}`);
+    const pai = Number(r.json?.id ?? 0);
+
+    /* 2) pasta irmã com o mesmo nome é recusada (a árvore não pode ficar ambígua) */
+    r = await call("POST", "/pastas", { key: TESTKEY, corpo: { nome: nomePai, pai_id: 0 } });
+    f.check("v3.85 pasta irmã repetida é 409", r.status === 409, `${r.status} ${r.texto.slice(0, 140)}`);
+
+    /* 3) subpasta */
+    r = await call("POST", "/pastas", { key: TESTKEY, corpo: { nome: nomeFilha, pai_id: pai } });
+    f.check("v3.85 subpasta dentro da pasta", r.status === 201 && Number(r.json?.pai_id) === pai, `${r.status} ${r.texto.slice(0, 140)}`);
+    const filha = Number(r.json?.id ?? 0);
+
+    /* 4) a árvore aparece na lista */
+    r = await call("GET", "/pastas", { key: TESTKEY });
+    const arvore = (r.json?.pastas ?? []) as Array<{ id: number; nome: string; pai_id: number | null }>;
+    f.check("v3.85 GET /pastas mostra as duas com o pai certo",
+      arvore.some((p) => p.id === pai && p.pai_id === null) && arvore.some((p) => p.id === filha && p.pai_id === pai),
+      JSON.stringify(arvore).slice(0, 200));
+
+    /* 5) mover pasta para dentro da própria filha = ciclo bloqueado */
+    r = await call("PATCH", `/pastas/${pai}`, { key: TESTKEY, corpo: { pai_id: filha } });
+    f.check("v3.85 mover pasta para dentro dela mesma é 422", r.status === 422, `${r.status} ${r.texto.slice(0, 140)}`);
+
+    /* 6) arquivo novo cai na raiz, depois é movido para a pasta */
+    const conteudo = Buffer.from(`nexos v3.85 ${sufixo} conteudo do arquivo de teste\n`, "utf8");
+    const idArq = await subir(`e2e-arq-${sufixo}.txt`, conteudo);
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ pasta: "raiz", limit: "500" }).toString(), { key: TESTKEY });
+    f.check("v3.85 arquivo novo aparece na raiz", (r.json?.arquivos ?? []).some((a: any) => a.id === idArq), `${r.status} ${r.texto.slice(0, 140)}`);
+
+    r = await call("PATCH", `/arquivos/${idArq}`, { key: TESTKEY, corpo: { pasta_id: pai } });
+    f.check("v3.85 PATCH move o arquivo para a pasta", r.status === 200 && Number(r.json?.pasta_id) === pai, `${r.status} ${r.texto.slice(0, 140)}`);
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ pasta: String(pai) }).toString(), { key: TESTKEY });
+    f.check("v3.85 a lista da pasta traz o arquivo", (r.json?.arquivos ?? []).some((a: any) => a.id === idArq), r.texto.slice(0, 160));
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ pasta: "raiz", limit: "500" }).toString(), { key: TESTKEY });
+    f.check("v3.85 depois de mover, a raiz fica sem ele", !(r.json?.arquivos ?? []).some((a: any) => a.id === idArq), r.texto.slice(0, 160));
+
+    /* 7) renomear: a ficha E o disco mudam, e o download entrega o conteúdo novo pelo nome novo */
+    const nomeTrocado = `e2e-arq-renomeado-${sufixo}.txt`;
+    r = await call("PATCH", `/arquivos/${idArq}`, { key: TESTKEY, corpo: { nome: nomeTrocado } });
+    f.check("v3.85 renomear devolve o nome novo", r.status === 200 && r.json?.nome === nomeTrocado, `${r.status} ${r.texto.slice(0, 140)}`);
+    const noDisco = sh(`find /app/dados/anexos -path "*${idArq}*" -type f -printf '%f\\n' | head -1`).trim();
+    f.check("v3.85 o arquivo no disco seguiu o novo nome", noDisco === nomeTrocado, noDisco);
+    r = await call("GET", `/anexos/${idArq}`, { key: TESTKEY });
+    f.check("v3.85 download continua íntegro depois de renomear",
+      r.status === 200 && r.buf.equals(conteudo) && /filename\*=UTF-8''/.test(r.headers.get("content-disposition") ?? ""),
+      `${r.status} ${r.buf.length}`);
+
+    /* 8) favoritar e achar na vista de favoritos + busca por termo */
+    r = await call("PATCH", `/arquivos/${idArq}`, { key: TESTKEY, corpo: { favorita: true } });
+    f.check("v3.85 favoritar", r.status === 200 && r.json?.favorita === true, `${r.status} ${r.texto.slice(0, 140)}`);
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ favoritos: "1" }).toString(), { key: TESTKEY });
+    f.check("v3.85 vista favoritos traz o arquivo", (r.json?.arquivos ?? []).some((a: any) => a.id === idArq), r.texto.slice(0, 160));
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ q: `renomeado-${sufixo}` }).toString(), { key: TESTKEY });
+    f.check("v3.85 busca por termo acha sem dizer a pasta", (r.json?.arquivos ?? []).some((a: any) => a.id === idArq), r.texto.slice(0, 160));
+
+    /* 9) excluir = LIXEIRA: some da pasta, aparece na lixeira, e o /anexos do chat também esconde */
+    r = await call("POST", "/arquivos/excluir", { key: TESTKEY, corpo: { ids: [idArq] } });
+    f.check("v3.85 excluir manda para a lixeira", r.status === 200 && r.json?.lixeira === true && Number(r.json?.excluidos) === 1, `${r.status} ${r.texto.slice(0, 140)}`);
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ lixeira: "1" }).toString(), { key: TESTKEY });
+    const naLixeira = (r.json?.arquivos ?? []).find((a: any) => a.id === idArq);
+    f.check("v3.85 a lixeira lista com data de exclusão", Boolean(naLixeira?.excluido_em), r.texto.slice(0, 160));
+    r = await call("GET", "/anexos?" + new URLSearchParams({ limit: "200" }).toString(), { key: TESTKEY });
+    f.check("v3.85 o /anexos (chat) não mostra o que está na lixeira", !(r.json?.anexos ?? []).some((a: any) => a.id === idArq), r.texto.slice(0, 160));
+
+    /* 10) restaurar devolve para a MESMA pasta de origem */
+    r = await call("POST", "/arquivos/restaurar", { key: TESTKEY, corpo: { ids: [idArq] } });
+    f.check("v3.85 restaurar devolve 1 arquivo", r.status === 200 && Number(r.json?.restaurados) === 1, `${r.status} ${r.texto.slice(0, 160)}`);
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ pasta: String(pai) }).toString(), { key: TESTKEY });
+    f.check("v3.85 restaurado volta para a pasta de origem", (r.json?.arquivos ?? []).some((a: any) => a.id === idArq), r.texto.slice(0, 160));
+
+    /* 11) copiar para outra pasta = bytes novos, ficha nova, conteúdo igual */
+    r = await call("POST", "/arquivos/copiar", { key: TESTKEY, corpo: { ids: [idArq], pasta: filha } });
+    const copia = String((r.json?.copiados ?? [])[0] ?? "");
+    f.check("v3.85 copiar cria uma ficha nova na pasta de destino", r.status === 200 && Boolean(copia) && copia !== idArq, `${r.status} ${r.texto.slice(0, 140)}`);
+    if (copia) {
+      r = await call("GET", `/anexos/${copia}`, { key: TESTKEY });
+      f.check("v3.85 a cópia tem o mesmo conteúdo", r.status === 200 && r.buf.equals(conteudo), `${r.status} ${r.buf.length}`);
+    }
+
+    /* 12) zip da seleção cai como .zip de verdade com os dois nomes */
+    r = await call("GET", `/arquivos/zip?ids=${idArq},${copia}`, { key: TESTKEY });
+    let nomes = new Map<string, Buffer>();
+    try {
+      nomes = lerZip(r.buf);
+    } catch {
+      /* fica vazio e a checagem abaixo reporta */
+    }
+    f.check("v3.85 zip 200 application/zip", r.status === 200 && (r.headers.get("content-type") ?? "").includes("application/zip"),
+      `${r.status} ${r.headers.get("content-type")}`);
+    f.check("v3.85 o zip traz os dois arquivos com bytes iguais",
+      nomes.size === 2 && [...nomes.values()].every((b) => b.equals(conteudo)),
+      JSON.stringify([...nomes.keys()]));
+
+    /* 13) apagar a pasta LEVA o conteúdo para a lixeira e restaurar traz tudo de volta */
+    r = await call("DELETE", `/pastas/${pai}`, { key: TESTKEY });
+    f.check("v3.85 DELETE /pastas manda a pasta para a lixeira", r.status === 200 && r.json?.lixeira === true, `${r.status} ${r.texto.slice(0, 140)}`);
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ lixeira: "1" }).toString(), { key: TESTKEY });
+    f.check("v3.85 o arquivo da pasta apagada caiu junto na lixeira", (r.json?.arquivos ?? []).some((a: any) => a.id === idArq), r.texto.slice(0, 200));
+    r = await call("POST", `/pastas/${pai}/restaurar`, { key: TESTKEY, corpo: {} });
+    f.check("v3.85 restaurar a pasta traz os arquivos junto", r.status === 200 && Number(r.json?.arquivos) >= 1, `${r.status} ${r.texto.slice(0, 160)}`);
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ pasta: String(pai) }).toString(), { key: TESTKEY });
+    f.check("v3.85 depois de restaurar a pasta, o arquivo está nela", (r.json?.arquivos ?? []).some((a: any) => a.id === idArq), r.texto.slice(0, 160));
+
+    /* 14) números da barra de status */
+    r = await call("GET", "/arquivos/usados", { key: TESTKEY });
+    f.check("v3.85 /arquivos/usados devolve contagens",
+      r.status === 200 && typeof r.json?.arquivos === "number" && typeof r.json?.lixeira_itens === "number" && Number(r.json?.pastas) >= 2,
+      r.texto.slice(0, 200));
+
+    /* 15) isolamento: o explorador é PRIVADO da conta (decisão do dono para máquinas na v3.79 e
+           a mesma aqui) — nem o OPERADOR vê, renomeia ou apaga arquivo/pasta de outra conta, e o
+           ?tenant= do seletor do painel não abre essa porta. */
+    r = await call("GET", "/pastas", { key: OPKEY });
+    f.check("v3.85 outra conta não vê a pasta alheia", !(r.json?.pastas ?? []).some((p: any) => p.id === pai), r.texto.slice(0, 160));
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ pasta: String(pai) }).toString(), { key: OPKEY });
+    f.check("v3.85 listar pasta alheia não vaza arquivo", (r.json?.arquivos ?? []).every((a: any) => a.id !== idArq), r.texto.slice(0, 160));
+    r = await call("PATCH", `/pastas/${pai}`, { key: OPKEY, corpo: { nome: "invasao" } });
+    f.check("v3.85 renomear pasta alheia é 404", r.status === 404, `${r.status} ${r.texto.slice(0, 140)}`);
+    r = await call("POST", "/arquivos/excluir", { key: OPKEY, corpo: { ids: [idArq] } });
+    f.check("v3.85 excluir arquivo alheio é 404", r.status === 404, `${r.status} ${r.texto.slice(0, 140)}`);
+
+    /* 16) esvaziar a lixeira apaga de vez (disco incluso) e o download morre em 404 */
+    const idDescartavel = await subir(`e2e-descarte-${sufixo}.txt`, Buffer.from("fora em instantes\n", "utf8"));
+    await call("POST", "/arquivos/excluir", { key: TESTKEY, corpo: { ids: [idDescartavel] } });
+    r = await call("DELETE", "/arquivos/lixeira", { key: TESTKEY });
+    f.check("v3.85 esvaziar lixeira reporta o que saiu", r.status === 200 && Number(r.json?.arquivos) >= 1, `${r.status} ${r.texto.slice(0, 140)}`);
+    r = await call("GET", `/anexos/${idDescartavel}`, { key: TESTKEY });
+    f.check("v3.85 depois de esvaziar, o arquivo não existe mais", r.status === 404, r.status);
+    r = await call("GET", "/arquivos?" + new URLSearchParams({ lixeira: "1" }).toString(), { key: TESTKEY });
+    f.check("v3.85 lixeira fica vazia depois de esvaziar", (r.json?.arquivos ?? []).every((a: any) => a.id !== idDescartavel), r.texto.slice(0, 160));
+
+    /* 17) faxina da lixeira é ROTINA DO SISTEMA: expurgarLixeira com prazo 0 apaga o que está
+           na lixeira (a mesma função que o loop de 60min chama), sem script solto. */
+    const idParaFaxina = await subir(`e2e-faxina-${sufixo}.txt`, Buffer.from("aguardando a faxina\n", "utf8"));
+    await call("POST", "/arquivos/excluir", { key: TESTKEY, corpo: { ids: [idParaFaxina] } });
+    psql(`UPDATE anexos_maquina SET excluido_em = now() - interval '40 days' WHERE id = '${idParaFaxina}'`);
+    r = await call("POST", "/decay", { key: TESTKEY, corpo: {} });
+    f.check("v3.85 /decay (forçar agora) devolve os contadores da lixeira",
+      r.status === 200 && typeof r.json?.expurgo?.lixeira_arquivos === "number" && Number(r.json?.expurgo?.lixeira_arquivos) >= 1,
+      `${r.status} ${JSON.stringify(r.json?.expurgo ?? {}).slice(0, 180)}`);
+    const vive = psql(`SELECT count(*) FROM anexos_maquina WHERE id = '${idParaFaxina}'`);
+    f.check("v3.85 a faxina comeu o item da lixeira vencido há 40 dias", vive === "0", `linhas=${vive}`);
+    const noDiscoFaxina = sh(`find /app/dados/anexos -path "*${idParaFaxina}*" | head -1`).trim();
+    f.check("v3.85 a faxina também tirou os bytes do volume", noDiscoFaxina === "", noDiscoFaxina.slice(0, 160));
+    /* o item que NÃO está vencido tem que sobreviver à mesma rodada */
+    const viveVivo = psql(`SELECT count(*) FROM anexos_maquina WHERE id = '${idArq}'`);
+    f.check("v3.85 o que está na lixeira há pouco (ou vivo) NÃO é tocado", viveVivo === "1", `linhas=${viveVivo}`);
+
+    /* 18) limpeza do rastro do teste */
+    await call("POST", "/arquivos/excluir", { key: TESTKEY, corpo: { ids: [idArq, copia] } });
+    await call("DELETE", "/arquivos/lixeira", { key: TESTKEY });
+    await call("DELETE", `/pastas/${filha}?definitivo=1`, { key: TESTKEY });
+    await call("DELETE", `/pastas/${pai}?definitivo=1`, { key: TESTKEY });
+    const sobraPastas = psql(`SELECT count(*) FROM pastas_arquivos WHERE nome LIKE 'e2e-%-${sufixo}'`);
+    f.check("v3.85 o teste não deixa lixo: as pastas sumiram do banco", sobraPastas === "0", `restam=${sobraPastas}`);
+
+    f.fechar("explorador-3.85");
+  });
+
   await bloco(t, "freio de força bruta (último: bloqueia o IP)", async () => {
     const f = fiscal();
     for (let i = 0; i < 10; i++) {
